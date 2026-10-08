@@ -143,12 +143,14 @@ file_meta(
   extra JSON                             -- extractor-specific overflow
 )
 
--- extracted text (kept separate so files table stays small/hot)
-file_text(file_id INT PK, text TEXT, truncated INT, extractor TEXT, extractor_version INT)
+-- extraction bookkeeping only; the text itself lives in `fts`
+file_text(file_id INT PK, extractor TEXT, extractor_version INT, char_count INT, truncated INT, extracted_at INT)
 
--- full-text index (external-content FTS5 over file_text + name)
-CREATE VIRTUAL TABLE fts USING fts5(name, text, content='', tokenize='unicode61 remove_diacritics 2');
--- rows inserted explicitly with rowid = file_id; snippet()/bm25() used in search
+-- full-text index. A *regular* FTS5 table (not external-content/contentless):
+-- external-content tables make deletes fragile (old values must be replayed
+-- exactly) and contentless ones cannot produce snippet(). Owning the text here
+-- avoids duplicating it. rowid = file_id; snippet()/bm25() used in search.
+CREATE VIRTUAL TABLE fts USING fts5(name, text, tokenize='unicode61 remove_diacritics 2');
 
 -- text chunks for embeddings (documents are chunked; images have 1 "chunk")
 chunks(
@@ -160,7 +162,10 @@ chunks(
 CREATE INDEX chunks_file ON chunks(file_id);
 
 -- durable job queue for the pipeline
-jobs(id INTEGER PK, file_id INT, stage INT, priority INT, attempts INT, not_before INT, created_at INT)
+-- one job per (file, stage); workers lease jobs for a bounded time so a crash
+-- or hang makes them pickable again
+jobs(id INTEGER PK, file_id INT, stage INT, priority INT, attempts INT, not_before INT,
+     leased_until INT, created_at INT, UNIQUE(file_id, stage))
 CREATE INDEX jobs_pick ON jobs(stage, priority DESC, not_before, id);
 
 -- model registry (what's downloaded + verified)

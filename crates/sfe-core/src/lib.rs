@@ -5,5 +5,9 @@
 //! that the pipeline and search layers are built on.
 
 pub mod ids;
+pub mod model;
 
 pub use ids::{ChunkId, FileId, RootId};
+pub use model::{
+    Category, DiscoveredFile, FileKind, FileMeta, FileRecord, IndexState, Job, Root, Stage,
+};
