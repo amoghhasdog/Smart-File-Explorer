@@ -1,0 +1,19 @@
+[package]
+name = "sfe-search"
+description = "Search orchestrator: filters + FTS5 + vector strategies fused into ranked results."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sfe-core.workspace = true
+sfe-db.workspace = true
+sfe-query.workspace = true
+sfe-embed.workspace = true
+sfe-vector.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

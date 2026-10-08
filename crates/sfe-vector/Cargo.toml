@@ -1,0 +1,14 @@
+[package]
+name = "sfe-vector"
+description = "VectorIndex trait and HNSW (usearch) implementation with on-disk persistence."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sfe-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

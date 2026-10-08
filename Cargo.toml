@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/amoghhasdog/Smart-File-Explorer"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# internal crates
+sfe-core = { path = "crates/sfe-core" }
+sfe-db = { path = "crates/sfe-db" }
+sfe-fs = { path = "crates/sfe-fs" }
+sfe-extract = { path = "crates/sfe-extract" }
+sfe-embed = { path = "crates/sfe-embed" }
+sfe-vector = { path = "crates/sfe-vector" }
+sfe-index = { path = "crates/sfe-index" }
+sfe-query = { path = "crates/sfe-query" }
+sfe-search = { path = "crates/sfe-search" }
+sfe-engine = { path = "crates/sfe-engine" }
+
+# shared external deps (pinned here, referenced with `workspace = true`)
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.37", features = ["bundled", "blob"] }
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,14 @@
+[package]
+name = "sfe-extract"
+description = "Extractor trait, registry and adapters (plain text, pdf, docx, image, media)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sfe-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "sfe-engine"
+description = "Façade wiring db, fs, index and search together; the only crate the Tauri shell depends on."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sfe-core.workspace = true
+sfe-db.workspace = true
+sfe-fs.workspace = true
+sfe-index.workspace = true
+sfe-search.workspace = true
+sfe-embed.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

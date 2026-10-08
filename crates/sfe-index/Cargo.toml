@@ -1,0 +1,21 @@
+[package]
+name = "sfe-index"
+description = "Tiered, resumable indexing pipeline: discover → metadata → text → embed."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sfe-core.workspace = true
+sfe-db.workspace = true
+sfe-fs.workspace = true
+sfe-extract.workspace = true
+sfe-embed.workspace = true
+sfe-vector.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
