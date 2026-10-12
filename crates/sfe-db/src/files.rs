@@ -236,6 +236,41 @@ pub fn set_content_hash(conn: &Connection, id: FileId, hash: &[u8]) -> Result<()
     Ok(())
 }
 
+/// Files that gave up, newest failure first.
+pub fn list_failed(conn: &Connection, limit: usize) -> Result<Vec<FileRecord>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {COLS} FROM files WHERE deleted = 0 AND index_state = 9
+         ORDER BY indexed_at DESC LIMIT ?1"
+    ))?;
+    let mut rows = stmt.query([limit as i64])?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        out.push(row_to_file(r)?);
+    }
+    Ok(out)
+}
+
+/// Put every failed file back to `Discovered` so it is reprocessed.
+pub fn reset_failed(conn: &Connection) -> Result<Vec<FileId>> {
+    let mut stmt = conn.prepare(
+        "UPDATE files SET index_state = 0, index_error = NULL
+         WHERE deleted = 0 AND index_state = 9 RETURNING id",
+    )?;
+    let ids = stmt
+        .query_map([], |r| r.get::<_, i64>(0).map(FileId))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// Ids of tombstoned rows (for cleaning derived data before purging).
+pub fn list_tombstoned(conn: &Connection, limit: usize) -> Result<Vec<FileId>> {
+    let mut stmt = conn.prepare_cached("SELECT id FROM files WHERE deleted = 1 LIMIT ?1")?;
+    let ids = stmt
+        .query_map([limit as i64], |r| r.get::<_, i64>(0).map(FileId))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
 /// Live files per index state, for progress reporting.
 pub fn count_by_state(conn: &Connection) -> Result<Vec<(IndexState, u64)>> {
     let mut stmt = conn.prepare(

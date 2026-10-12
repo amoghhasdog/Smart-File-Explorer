@@ -9,7 +9,7 @@ const status: IndexStatus = {
   metadata: 3,
   text: 0,
   embedded: 0,
-  failed: 0,
+  failed: 1,
   pendingJobs: 0,
   waitingForModel: 0,
   scanning: [],
@@ -129,6 +129,24 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
       ];
     case "models_install":
       return null;
+    case "app_stats":
+      return {
+        version: "0.1.0",
+        dataDir: "C:\\data",
+        dbBytes: 3 * 1024 * 1024,
+        vectorsBytes: 1024,
+        thumbsBytes: 0,
+        modelsBytes: 0,
+        files: 3,
+        textChunks: 4,
+        imageChunks: 0,
+      };
+    case "index_problems":
+      return [{ id: 9, path: "C:\\docs\\broken.pdf", name: "broken.pdf", error: "pdf: parse error", at: 1 }];
+    case "index_retry_failed":
+      return 1;
+    case "index_purge":
+      return null;
     case "file_open":
     case "file_reveal":
       return null;
@@ -161,6 +179,22 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /remove C:\\docs/i }));
     await waitFor(() => expect(screen.queryByText("C:\\docs")).toBeNull());
+  });
+
+  it("shows problems and stats, and purges only after a second confirmation", async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /1 problem/i }));
+    expect(await screen.findByText("broken.pdf")).toBeTruthy();
+    expect(screen.getByText(/pdf: parse error/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /retry all/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("index_retry_failed", undefined));
+
+    fireEvent.click(screen.getByRole("button", { name: /status & storage/i }));
+    expect(await screen.findByText(/3\.0 MB/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /purge index/i }));
+    expect(invoke).not.toHaveBeenCalledWith("index_purge", undefined);
+    fireEvent.click(screen.getByRole("button", { name: /yes, purge/i }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("index_purge", undefined));
   });
 
   it("offers the semantic model download with explicit consent", async () => {

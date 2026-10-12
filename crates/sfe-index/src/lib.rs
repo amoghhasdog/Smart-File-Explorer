@@ -23,12 +23,12 @@ pub mod thumbs;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use sfe_core::{Category, FileId, FileKind, Root, RootId, Stage};
-use sfe_db::{Database, files, fts, jobs, roots};
+use sfe_db::{Database, chunks, files, fts, jobs, roots};
 use sfe_embed::{ImageEmbedder, TextEmbedder};
 use sfe_extract::{Limits, Registry};
 use sfe_fs::{IgnoreRules, WalkStats};
@@ -111,6 +111,8 @@ pub struct Indexer {
     image_vectors: RwLock<Option<Arc<dyn VectorIndex>>>,
     status: status::StatusHub,
     paused: AtomicBool,
+    /// Unix seconds until which interactive search has priority.
+    search_until: AtomicI64,
     cancel: CancellationToken,
     /// Wakes idle workers when new jobs land.
     wake: Notify,
@@ -138,6 +140,7 @@ impl Indexer {
             image_vectors: RwLock::new(None),
             status,
             paused: AtomicBool::new(false),
+            search_until: AtomicI64::new(0),
             cancel: CancellationToken::new(),
             wake: Notify::new(),
             scanning: Mutex::new(HashSet::new()),
@@ -235,6 +238,87 @@ impl Indexer {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// A user search just ran: for a few seconds, only one worker keeps
+    /// going so the UI stays snappy.
+    pub fn note_search(&self) {
+        self.search_until
+            .store(sfe_db::now() + 3, Ordering::Relaxed);
+    }
+
+    fn throttled(&self) -> bool {
+        self.search_until.load(Ordering::Relaxed) > sfe_db::now()
+    }
+
+    /// Reprocess every failed file. Returns how many were queued.
+    pub fn retry_failed(&self) -> Result<usize> {
+        let n = self.db.transaction(|c| {
+            let ids = files::reset_failed(c)?;
+            jobs::clear_for_files(c, &ids)?;
+            jobs::enqueue_many(c, &ids, Stage::Metadata, 5)?;
+            Ok(ids.len())
+        })?;
+        self.refresh_status();
+        self.wake.notify_waiters();
+        Ok(n)
+    }
+
+    /// Permanently remove tombstoned rows and their vectors.
+    pub fn gc(&self) -> Result<usize> {
+        let text = self.vectors.read().unwrap().clone();
+        let image = self.image_vectors.read().unwrap().clone();
+        let mut total = 0;
+        loop {
+            let n = self.db.transaction(|c| {
+                let ids = files::list_tombstoned(c, 2_000)?;
+                if ids.is_empty() {
+                    return Ok(0);
+                }
+                for id in &ids {
+                    for cid in chunks::delete_for_file(c, *id)? {
+                        for idx in [&text, &image].into_iter().flatten() {
+                            let _ = idx.remove(cid.0 as u64);
+                        }
+                    }
+                }
+                fts::delete_many(c, &ids)?;
+                files::purge_tombstoned(c, ids.len())?;
+                Ok(ids.len())
+            })?;
+            total += n;
+            if n == 0 {
+                break;
+            }
+        }
+        if total > 0 {
+            tracing::info!(total, "purged tombstoned files");
+        }
+        Ok(total)
+    }
+
+    /// Drop every vector a root contributed (call before deleting the root).
+    pub fn forget_root_vectors(&self, root: RootId) -> Result<()> {
+        let ids = chunks::ids_for_root(&self.db.reader()?, root)?;
+        for idx in [&self.vectors, &self.image_vectors] {
+            if let Some(idx) = idx.read().unwrap().as_ref() {
+                for cid in &ids {
+                    let _ = idx.remove(cid.0 as u64);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Wipe all derived vectors (index purge).
+    pub fn clear_vectors(&self) {
+        for idx in [&self.vectors, &self.image_vectors] {
+            if let Some(idx) = idx.read().unwrap().as_ref()
+                && let Err(e) = idx.clear()
+            {
+                tracing::error!(error = %e, "clearing vector index");
+            }
+        }
     }
 
     /// Stop workers and abort in-flight scans at the next checkpoint.
@@ -349,6 +433,9 @@ impl Indexer {
             Ok(gone.len())
         })?;
         tracing::info!(root = %root.path, dir = %dir_s, ?stats, tombstoned, enqueued, "scan complete");
+        if is_full && let Err(e) = self.gc() {
+            tracing::error!(error = %e, "gc after scan");
+        }
         Ok(ScanOutcome::Done {
             stats,
             tombstoned,
@@ -446,6 +533,10 @@ impl Indexer {
                     _ = self.cancel.cancelled() => break,
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                 }
+                continue;
+            }
+            if idx > 0 && self.throttled() {
+                tokio::time::sleep(Duration::from_millis(300)).await;
                 continue;
             }
             let this = Arc::clone(&self);

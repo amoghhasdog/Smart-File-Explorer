@@ -446,3 +446,51 @@ mark {
   font-size: 12px;
   margin-top: 10px;
 }
+
+/* ----- Phase 7: settings, problems ----- */
+.settings {
+  margin-top: 24px;
+  font-size: 13px;
+}
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.settings-tabs button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.problems,
+.stats {
+  margin-top: 10px;
+}
+.problem-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+.problem {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.problem-name {
+  font-weight: 500;
+  word-break: break-all;
+}
+.problem-error {
+  font-size: 12px;
+  word-break: break-word;
+}
+.purge-confirm {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+button.danger {
+  border-color: var(--error);
+  color: var(--error);
+}

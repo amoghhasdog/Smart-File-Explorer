@@ -142,6 +142,26 @@ export interface ModelProgress {
   error: string | null;
 }
 
+export interface Problem {
+  id: FileId;
+  path: string;
+  name: string;
+  error: string;
+  at: number | null;
+}
+
+export interface Stats {
+  version: string;
+  dataDir: string;
+  dbBytes: number;
+  vectorsBytes: number;
+  thumbsBytes: number;
+  modelsBytes: number;
+  files: number;
+  textChunks: number;
+  imageChunks: number;
+}
+
 export interface IpcError {
   code: string;
   message: string;
@@ -171,6 +191,11 @@ export const ipc = {
   fileDetails: (id: FileId) => invoke<FileDetails | null>("file_details", { id }),
   fileOpen: (id: FileId) => invoke<void>("file_open", { id }),
   fileReveal: (id: FileId) => invoke<void>("file_reveal", { id }),
+
+  indexProblems: (limit = 200) => invoke<Problem[]>("index_problems", { limit }),
+  indexRetryFailed: () => invoke<number>("index_retry_failed"),
+  appStats: () => invoke<Stats>("app_stats"),
+  indexPurge: () => invoke<void>("index_purge"),
 
   modelsStatus: () => invoke<ModelStatus[]>("models_status"),
   modelsInstall: (kind: ModelKind) => invoke<void>("models_install", { kind }),

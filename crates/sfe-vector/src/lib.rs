@@ -46,6 +46,8 @@ pub trait VectorIndex: Send + Sync {
     fn search(&self, query: &[f32], k: usize) -> Result<Vec<Neighbor>>;
     /// Persist to disk (no-op for in-memory indexes).
     fn save(&self) -> Result<()>;
+    /// Drop every vector.
+    fn clear(&self) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +198,15 @@ impl VectorIndex for Hnsw {
         idx.save(self.path.to_str().unwrap_or_default())
             .map_err(|e| VectorError::Index(e.to_string()))
     }
+
+    fn clear(&self) -> Result<()> {
+        let idx = self.index.write().unwrap();
+        idx.reset().map_err(|e| VectorError::Index(e.to_string()))?;
+        idx.reserve(1024)
+            .map_err(|e| VectorError::Index(e.to_string()))?;
+        let _ = std::fs::remove_file(&self.path);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +277,11 @@ impl VectorIndex for Flat {
     fn save(&self) -> Result<()> {
         Ok(())
     }
+
+    fn clear(&self) -> Result<()> {
+        self.items.write().unwrap().clear();
+        Ok(())
+    }
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
@@ -312,6 +328,10 @@ mod tests {
         idx.add(3, &unit(1, d)).unwrap();
         assert_eq!(idx.len(), 2);
         assert!(matches!(idx.add(9, &[1.0]), Err(VectorError::Dim { .. })));
+        idx.clear().unwrap();
+        assert!(idx.is_empty());
+        idx.add(5, &unit(2, d)).unwrap();
+        assert_eq!(idx.len(), 1);
     }
 
     #[test]
@@ -329,8 +349,8 @@ mod tests {
             idx.save().unwrap();
         }
         let idx = Hnsw::open(&p, 8).unwrap();
-        assert_eq!(idx.len(), 2);
-        assert!(idx.contains(2));
+        assert_eq!(idx.len(), 1);
+        assert!(idx.contains(5));
         assert!(matches!(Hnsw::open(&p, 16), Err(VectorError::Dim { .. })));
     }
 

@@ -6,7 +6,8 @@
 use serde::Serialize;
 use sfe_core::{FileId, Root, RootId};
 use sfe_engine::{
-    Engine, EngineError, FileDetails, IndexStatus, ModelKind, ModelStatus, Query, SearchResponse,
+    Engine, EngineError, FileDetails, IndexStatus, ModelKind, ModelStatus, Problem, Query,
+    SearchResponse, Stats,
 };
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -160,6 +161,46 @@ pub async fn models_status(engine: State<'_, Engine>) -> IpcResult<Vec<ModelStat
 #[tauri::command]
 pub async fn models_install(engine: State<'_, Engine>, kind: ModelKind) -> IpcResult<()> {
     Ok(engine.models_install(kind)?)
+}
+
+/// Files that failed to index, newest first.
+#[tauri::command]
+pub async fn index_problems(
+    engine: State<'_, Engine>,
+    limit: Option<usize>,
+) -> IpcResult<Vec<Problem>> {
+    Ok(engine.problems(limit.unwrap_or(200))?)
+}
+
+#[tauri::command]
+pub async fn index_retry_failed(engine: State<'_, Engine>) -> IpcResult<usize> {
+    Ok(engine.retry_failed()?)
+}
+
+#[tauri::command]
+pub async fn app_stats(engine: State<'_, Engine>) -> IpcResult<Stats> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || engine.stats())
+        .await
+        .map_err(|e| IpcError {
+            code: "runtime",
+            message: e.to_string(),
+        })?
+        .map_err(IpcError::from)
+}
+
+/// Remove every indexed folder and all derived data (text, vectors,
+/// thumbnails). Models stay installed.
+#[tauri::command]
+pub async fn index_purge(engine: State<'_, Engine>) -> IpcResult<()> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || engine.purge_index())
+        .await
+        .map_err(|e| IpcError {
+            code: "runtime",
+            message: e.to_string(),
+        })?
+        .map_err(IpcError::from)
 }
 
 /// Open a file with its default application. The path comes from the index,

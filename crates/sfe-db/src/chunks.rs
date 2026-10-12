@@ -79,6 +79,26 @@ pub fn file_ids(conn: &Connection, chunks: &[ChunkId]) -> Result<Vec<(ChunkId, F
     Ok(out)
 }
 
+/// Every chunk id under a root (to drop from vector indexes before the root goes).
+pub fn ids_for_root(conn: &Connection, root: sfe_core::RootId) -> Result<Vec<ChunkId>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.root_id = ?1",
+    )?;
+    let ids = stmt
+        .query_map([root.0], |r| r.get::<_, i64>(0).map(ChunkId))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+pub fn count_all(conn: &Connection) -> Result<(u64, u64)> {
+    let (t, i): (i64, i64) = conn.query_row(
+        "SELECT coalesce(sum(modality = 'text'), 0), coalesce(sum(modality = 'image'), 0) FROM chunks",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((t.max(0) as u64, i.max(0) as u64))
+}
+
 pub fn count(conn: &Connection, model: &str, modality: &str) -> Result<u64> {
     let n: i64 = conn.query_row(
         "SELECT count(*) FROM chunks WHERE model = ?1 AND modality = ?2",

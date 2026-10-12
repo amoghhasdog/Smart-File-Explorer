@@ -4,6 +4,7 @@
 //! own small tokio runtime, so background work never competes with the UI
 //! runtime. The Tauri shell (and integration tests) talk only to [`Engine`].
 
+mod admin;
 mod models;
 mod search;
 
@@ -19,6 +20,7 @@ use sfe_index::{Indexer, IndexerConfig};
 use sfe_search::Searcher;
 use tokio::sync::watch;
 
+pub use admin::{Problem, Stats};
 pub use search::{FileDetails, SearchHit};
 pub use sfe_embed::models::ModelKind;
 pub use sfe_embed::{ImageEmbedder, ModelProgress, ModelStatus, TextEmbedder};
@@ -173,6 +175,7 @@ impl Engine {
         if let Ok(mut w) = self.inner.watcher.lock() {
             let _ = w.unwatch(Path::new(&root.path));
         }
+        self.inner.indexer.forget_root_vectors(id)?;
         self.inner.db.transaction(|c| {
             fts::delete_for_root(c, id)?;
             roots::remove(c, id)?;
@@ -234,6 +237,7 @@ impl Engine {
 
     /// Natural-language search: parse, run strategies, fuse, page.
     pub fn search(&self, input: &str, limit: usize, offset: usize) -> Result<SearchResponse> {
+        self.inner.indexer.note_search();
         search::search(&self.inner.searcher, input, limit, offset)
     }
 

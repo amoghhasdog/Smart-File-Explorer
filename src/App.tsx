@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ipc, type IndexStatus } from "./lib/ipc";
 import { FoldersPanel } from "./features/folders/FoldersPanel";
 import { ModelsCard } from "./features/models/ModelsCard";
+import { SettingsPanel } from "./features/settings/SettingsPanel";
 import { StatusBar } from "./features/indexing/StatusBar";
 import { SearchView } from "./features/search/SearchView";
 import "./App.css";
@@ -37,6 +38,7 @@ export default function App() {
         <h1 className="brand">Smart File Explorer</h1>
         <FoldersPanel status={status} />
         <ModelsCard />
+        <SettingsPanel status={status} />
       </aside>
       <main className="main">
         <SearchView />

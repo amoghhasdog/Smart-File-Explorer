@@ -47,6 +47,10 @@ pub fn run() {
             commands::file_details,
             commands::models_status,
             commands::models_install,
+            commands::index_problems,
+            commands::index_retry_failed,
+            commands::app_stats,
+            commands::index_purge,
             commands::file_open,
             commands::file_reveal,
         ])
