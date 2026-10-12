@@ -128,6 +128,21 @@ export function SearchView() {
       )}
       <div className="search-body">
         <div className="results-scroll" ref={listRef}>
+          {!query.trim() && (
+            <div className="welcome muted">
+              <p>Describe what you remember. Some things that work:</p>
+              <ul>
+                <li>“images with a lot of blue”</li>
+                <li>“documents containing the word Ferrari”</li>
+                <li>“PDFs about machine learning I downloaded last year”</li>
+                <li>“videos longer than 10 minutes created before January 2026”</li>
+                <li>“screenshots in the Downloads folder from last week”</li>
+              </ul>
+              <p className="small">
+                ↑ ↓ to move · Enter opens · double-click opens · ↗ shows in Explorer
+              </p>
+            </div>
+          )}
           {query.trim() && hits.length === 0 && !error && (
             <p className="muted empty">No matches.</p>
           )}

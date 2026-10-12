@@ -494,3 +494,12 @@ button.danger {
   border-color: var(--error);
   color: var(--error);
 }
+
+.welcome {
+  padding: 24px 8px;
+  max-width: 520px;
+}
+.welcome ul {
+  padding-left: 18px;
+  line-height: 1.7;
+}
