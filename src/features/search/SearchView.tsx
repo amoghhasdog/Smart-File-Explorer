@@ -52,7 +52,7 @@ export function SearchView() {
         className="search-input"
         type="search"
         autoFocus
-        placeholder="Search file names… (e.g. ferrari, athena roadmap)"
+        placeholder='Search names and contents… (e.g. ferrari, "machine learning")'
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={onKey}

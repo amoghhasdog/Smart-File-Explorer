@@ -323,7 +323,7 @@ mod tests {
         let tree = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tree.path().join("projects/athena")).unwrap();
         std::fs::write(tree.path().join("projects/athena/Athena roadmap.md"), "x").unwrap();
-        std::fs::write(tree.path().join("holiday.jpg"), b"\xff\xd8\xff").unwrap();
+        std::fs::write(tree.path().join("holiday.bin"), b"\0\x01\x02 not text").unwrap();
 
         let engine = Engine::open(data.path()).unwrap();
         let root = engine.add_root(tree.path()).unwrap();
@@ -331,7 +331,8 @@ mod tests {
 
         let st = engine.status();
         assert_eq!(st.total_files, 2);
-        assert_eq!(st.metadata, 2);
+        assert_eq!(st.metadata, 1, "binary stops at metadata; {st:?}");
+        assert_eq!(st.text, 1, "markdown reaches the text stage; {st:?}");
 
         let hits = engine.search("athena road", 10, 0).unwrap();
         assert_eq!(hits.len(), 1);

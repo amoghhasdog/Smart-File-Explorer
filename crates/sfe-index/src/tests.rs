@@ -76,11 +76,10 @@ async fn drain(indexer: &Arc<Indexer>) {
 async fn scan_then_metadata_stage_makes_names_searchable() {
     let fx = fixture();
     write(fx.tree.path(), "docs/Ferrari notes.md", b"# Ferrari\n");
-    write(
-        fx.tree.path(),
-        "img/blue.png",
-        b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR",
-    );
+    let img = image::RgbImage::from_pixel(4, 4, image::Rgb([0, 0, 255]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    write(fx.tree.path(), "img/blue.png", &png.into_inner());
     write(fx.tree.path(), "node_modules/skip.js", b"");
     write(fx.tree.path(), "bin.dat", b"\0\x01\x02\x03");
 
@@ -98,13 +97,13 @@ async fn scan_then_metadata_stage_makes_names_searchable() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(fx.indexer.status().discovered, 3);
 
     drain(&fx.indexer).await;
 
     let st = fx.indexer.status();
     assert_eq!(st.total_files, 3);
-    assert_eq!(st.metadata, 3);
+    assert_eq!(st.metadata, 1, "binary file stops at metadata; {st:?}");
+    assert_eq!(st.text, 2, "md + png continue to the text stage; {st:?}");
     assert_eq!(st.failed, 0);
 
     {
@@ -114,7 +113,7 @@ async fn scan_then_metadata_stage_makes_names_searchable() {
         let rec = files::get(&c, hits[0].id).unwrap().unwrap();
         assert!(rec.path.ends_with("Ferrari notes.md"));
         assert_eq!(rec.mime.as_deref(), Some("text/markdown"));
-        assert_eq!(rec.index_state, IndexState::Metadata);
+        assert_eq!(rec.index_state, IndexState::Text);
 
         let png = files::get(
             &c,
@@ -261,6 +260,58 @@ async fn pause_stops_workers_and_resume_continues() {
     })
     .await
     .unwrap();
-    assert_eq!(fx.indexer.status().metadata, 5);
+    assert_eq!(fx.indexer.status().text, 5);
+    fx.finish().await;
+}
+
+#[tokio::test]
+async fn text_stage_indexes_content_metadata_and_hash() {
+    let fx = fixture();
+    write(
+        fx.tree.path(),
+        "car.md",
+        b"# Notes\n\nThe Ferrari F40 is red.\n",
+    );
+    write(fx.tree.path(), "data.bin", b"\0\x01\x02\x03binary");
+    let img = image::RgbImage::from_pixel(16, 16, image::Rgb([0, 0, 255]));
+    let mut png = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    write(fx.tree.path(), "sky.png", &png.into_inner());
+
+    fx.indexer.scan(&fx.root, None).await.unwrap();
+    drain(&fx.indexer).await;
+
+    let st = fx.indexer.status();
+    assert_eq!(st.failed, 0, "{st:?}");
+    assert_eq!(st.text, 2, "md + png reach the text stage; {st:?}");
+    assert_eq!(st.metadata, 1, "binary stays at metadata; {st:?}");
+
+    {
+        let c = fx.db.writer();
+        // Body text is searchable even though the name has no "ferrari".
+        let hits = fts::search(&c, &fts::escape_term("ferrari"), 10, 0).unwrap();
+        assert_eq!(hits.len(), 1);
+        let rec = files::get(&c, hits[0].id).unwrap().unwrap();
+        assert_eq!(rec.name, "car.md");
+        assert_eq!(rec.index_state, IndexState::Text);
+        assert_eq!(rec.content_hash.as_ref().map(|h| h.len()), Some(32));
+        let info = sfe_db::meta::get_text_info(&c, rec.id).unwrap().unwrap();
+        assert_eq!(info.extractor, "plain");
+        assert!(!info.truncated);
+        assert_eq!(
+            sfe_db::meta::get(&c, rec.id).unwrap().unwrap().word_count,
+            Some(7)
+        );
+
+        let png = files::get(
+            &c,
+            fts::search(&c, &fts::escape_term("sky"), 10, 0).unwrap()[0].id,
+        )
+        .unwrap()
+        .unwrap();
+        let m = sfe_db::meta::get(&c, png.id).unwrap().unwrap();
+        assert_eq!((m.width, m.height), (Some(16), Some(16)));
+        assert_eq!(m.hue_hist.unwrap()[8], 255);
+    }
     fx.finish().await;
 }

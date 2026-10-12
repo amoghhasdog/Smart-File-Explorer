@@ -16,6 +16,7 @@
 
 mod metadata;
 mod status;
+mod text;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use std::time::Duration;
 
 use sfe_core::{FileId, FileKind, Root, RootId, Stage};
 use sfe_db::{Database, files, fts, jobs, roots};
+use sfe_extract::{Limits, Registry};
 use sfe_fs::{IgnoreRules, WalkStats};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
@@ -56,17 +58,23 @@ pub struct IndexerConfig {
     /// Bytes read from the head of each file for mime sniffing.
     pub head_bytes: usize,
     pub ignore: IgnoreRules,
+    /// Caps for content extraction.
+    pub limits: Limits,
 }
 
 impl Default for IndexerConfig {
     fn default() -> Self {
         Self {
             batch_size: 2000,
-            workers: 2,
+            workers: std::thread::available_parallelism()
+                .map(|n| n.get().saturating_sub(1))
+                .unwrap_or(2)
+                .clamp(1, 4),
             job_batch: 64,
             lease_secs: 120,
             head_bytes: 8192,
             ignore: IgnoreRules::default(),
+            limits: Limits::default(),
         }
     }
 }
@@ -87,6 +95,7 @@ pub enum ScanOutcome {
 pub struct Indexer {
     db: Arc<Database>,
     cfg: IndexerConfig,
+    registry: Registry,
     status: status::StatusHub,
     paused: AtomicBool,
     cancel: CancellationToken,
@@ -109,6 +118,7 @@ impl Indexer {
         Arc::new(Self {
             db,
             cfg,
+            registry: Registry::with_defaults(),
             status,
             paused: AtomicBool::new(false),
             cancel: CancellationToken::new(),
@@ -389,36 +399,52 @@ impl Indexer {
 
     /// Lease a batch and run it. Returns the number of jobs processed.
     fn work_batch(&self) -> Result<usize> {
-        let leased = self.db.transaction(|c| {
-            jobs::lease(
-                c,
-                Some(Stage::Metadata),
-                self.cfg.job_batch,
-                self.cfg.lease_secs,
-            )
-        })?;
+        let leased = self
+            .db
+            .transaction(|c| jobs::lease(c, None, self.cfg.job_batch, self.cfg.lease_secs))?;
         if leased.is_empty() {
             return Ok(0);
         }
+        // Cheap stages drain first (lease orders by stage), so a batch is
+        // normally homogeneous; handle mixes anyway.
         let records = {
             let conn = self.db.writer();
             let ids: Vec<FileId> = leased.iter().map(|j| j.file_id).collect();
             files::get_many(&conn, &ids)?
         };
+        let n = leased.len();
+        let mut meta_results = Vec::new();
+        let mut text_results = Vec::new();
         // IO outside the write lock.
-        let mut results = Vec::with_capacity(leased.len());
         for job in &leased {
             let rec = records.iter().find(|r| r.id == job.file_id);
-            let out = match rec {
-                Some(rec) => metadata::run(rec, self.cfg.head_bytes),
-                None => metadata::Outcome::Gone,
-            };
-            results.push((job, out));
+            match job.stage {
+                Stage::Metadata => {
+                    let out = match rec {
+                        Some(rec) => metadata::run(rec, self.cfg.head_bytes, &self.registry),
+                        None => metadata::Outcome::Gone,
+                    };
+                    meta_results.push((job, out));
+                }
+                Stage::Text => {
+                    let out = match rec {
+                        Some(rec) => text::run(rec, &self.registry, &self.cfg.limits),
+                        None => text::Outcome::Gone,
+                    };
+                    text_results.push((job, out));
+                }
+                Stage::Embed => {
+                    // Not implemented until Phase 5; drop the job so it does not spin.
+                    text_results.push((job, text::Outcome::Unsupported));
+                }
+            }
         }
-        let n = results.len();
         self.db.transaction(|c| {
-            for (job, out) in results {
+            for (job, out) in meta_results {
                 metadata::apply(c, job, out)?;
+            }
+            for (job, out) in text_results {
+                text::apply(c, job, out)?;
             }
             Ok(())
         })?;

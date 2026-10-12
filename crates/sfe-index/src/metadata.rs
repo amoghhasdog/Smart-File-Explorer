@@ -4,13 +4,16 @@
 
 use std::path::Path;
 
-use sfe_core::{FileKind, FileRecord, IndexState, Job};
+use sfe_core::{FileKind, FileRecord, IndexState, Job, Stage};
 use sfe_db::{Result, files, fts, jobs, rusqlite::Connection};
+use sfe_extract::{FileProbe, Registry};
 
 #[derive(Debug)]
 pub(crate) enum Outcome {
     Ok {
         mime: Option<String>,
+        /// An extractor exists for this file: queue the text stage.
+        extract: bool,
     },
     /// File vanished between discovery and now.
     Gone,
@@ -19,14 +22,24 @@ pub(crate) enum Outcome {
 }
 
 /// Pure IO part, run outside any database lock.
-pub(crate) fn run(rec: &FileRecord, head_bytes: usize) -> Outcome {
+pub(crate) fn run(rec: &FileRecord, head_bytes: usize, registry: &Registry) -> Outcome {
     if rec.kind == FileKind::Dir {
-        return Outcome::Ok { mime: None };
+        return Outcome::Ok {
+            mime: None,
+            extract: false,
+        };
     }
     match sfe_fs::read_head(Path::new(&rec.path), head_bytes) {
-        Ok(head) => Outcome::Ok {
-            mime: sniff_mime(&head, &rec.ext),
-        },
+        Ok(head) => {
+            let mime = sniff_mime(&head, &rec.ext);
+            let extract = rec.size > 0
+                && registry.supports(&FileProbe {
+                    ext: &rec.ext,
+                    mime: mime.as_deref(),
+                    size: rec.size,
+                });
+            Outcome::Ok { mime, extract }
+        }
         Err(e) if e.is_not_found() => Outcome::Gone,
         Err(e) => Outcome::Failed(e.to_string()),
     }
@@ -61,11 +74,14 @@ pub(crate) fn sniff_mime(head: &[u8], ext: &str) -> Option<String> {
 /// Persist the outcome and settle the job. Runs inside the writer transaction.
 pub(crate) fn apply(c: &Connection, job: &Job, out: Outcome) -> Result<()> {
     match out {
-        Outcome::Ok { mime } => {
+        Outcome::Ok { mime, extract } => {
             if let Some(rec) = files::get(c, job.file_id)? {
                 files::set_mime(c, rec.id, mime.as_deref())?;
                 fts::set_name(c, rec.id, &rec.name)?;
                 files::set_state(c, rec.id, IndexState::Metadata, None)?;
+                if extract {
+                    jobs::enqueue(c, rec.id, Stage::Text, job.priority)?;
+                }
             }
             jobs::complete(c, job.id)?;
         }
