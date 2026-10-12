@@ -9,6 +9,11 @@ license.workspace = true
 sfe-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# default `numkong` SIMD backend fails to link on MSVC (its symbols are declared as DLL imports)
+usearch = { version = "2", default-features = false }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

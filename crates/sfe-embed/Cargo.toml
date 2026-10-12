@@ -1,14 +1,24 @@
 [package]
 name = "sfe-embed"
-description = "Local embedding models (text + CLIP image) and the model download/verify manager."
+description = "Local embedding models (text + CLIP image) and the model download manager."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[features]
+default = ["fastembed"]
+# Real ONNX models. Off → only the deterministic FakeEmbedder (tests, CI without network).
+fastembed = ["dep:fastembed"]
 
 [dependencies]
 sfe-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+fastembed = { version = "7", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -136,6 +136,19 @@ pub fn clear_for_file(conn: &Connection, file: FileId) -> Result<()> {
     Ok(())
 }
 
+/// Queue an embed job for every live file that finished the text stage but
+/// has no chunks yet (model installed after indexing).
+pub fn enqueue_missing_embed(conn: &Connection) -> Result<usize> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO jobs (file_id, stage, priority, attempts, not_before, created_at)
+         SELECT f.id, 3, -1, 0, 0, ?1 FROM files f
+         WHERE f.deleted = 0 AND f.kind = 'file' AND f.index_state = 2
+           AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file_id = f.id)",
+        [now()],
+    )?;
+    Ok(n)
+}
+
 pub fn clear_for_files(conn: &Connection, files: &[FileId]) -> Result<()> {
     let mut stmt = conn.prepare_cached("DELETE FROM jobs WHERE file_id = ?1")?;
     for f in files {

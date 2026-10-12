@@ -4,6 +4,7 @@
 //! own small tokio runtime, so background work never competes with the UI
 //! runtime. The Tauri shell (and integration tests) talk only to [`Engine`].
 
+mod models;
 mod search;
 
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use sfe_search::Searcher;
 use tokio::sync::watch;
 
 pub use search::{FileDetails, SearchHit};
+pub use sfe_embed::{ModelProgress, ModelStatus, TextEmbedder};
 pub use sfe_query::Query;
 pub use sfe_search::SearchResponse;
 
@@ -34,6 +36,10 @@ pub enum EngineError {
     Index(#[from] sfe_index::IndexError),
     #[error(transparent)]
     Search(#[from] sfe_search::SearchError),
+    #[error(transparent)]
+    Embed(sfe_embed::EmbedError),
+    #[error(transparent)]
+    Vector(#[from] sfe_vector::VectorError),
     #[error("could not start background runtime: {0}")]
     Runtime(std::io::Error),
     #[error("{0} is already covered by indexed folder {1}")]
@@ -54,6 +60,7 @@ struct Inner {
     db: Arc<Database>,
     indexer: Arc<Indexer>,
     searcher: Searcher,
+    models: models::Models,
     rt: tokio::runtime::Runtime,
     watcher: Mutex<Watcher>,
 }
@@ -91,6 +98,7 @@ impl Engine {
             .map_err(EngineError::Runtime)?;
         let indexer = Indexer::new(Arc::clone(&db), cfg);
         let searcher = Searcher::new(Arc::clone(&db));
+        let models = models::Models::new(&data_dir);
         let (watcher, changes) = Watcher::new(Duration::from_secs(2))?;
 
         let engine = Self {
@@ -99,6 +107,7 @@ impl Engine {
                 db,
                 indexer,
                 searcher,
+                models,
                 rt,
                 watcher: Mutex::new(watcher),
             }),
@@ -107,6 +116,7 @@ impl Engine {
             engine.inner.indexer.spawn_workers();
         });
         engine.spawn_change_pump(changes);
+        engine.load_installed_models();
         for root in engine.list_roots()? {
             if root.enabled {
                 engine.watch_root(&root);
@@ -299,6 +309,7 @@ impl Engine {
 impl Drop for Inner {
     fn drop(&mut self) {
         self.indexer.shutdown();
+        self.indexer.save_vectors();
     }
 }
 
@@ -392,5 +403,47 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(250));
         }
+    }
+
+    #[test]
+    fn semantic_search_finds_related_files_by_meaning() {
+        let data = tempfile::tempdir().unwrap();
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tree.path().join("planning.md"),
+            "Athena project roadmap: milestones for the athena launch and planning.",
+        )
+        .unwrap();
+        std::fs::write(
+            tree.path().join("bread.txt"),
+            "Recipe for banana bread with walnuts.",
+        )
+        .unwrap();
+
+        let engine = Engine::open(data.path()).unwrap();
+        engine
+            .activate_embedder(Arc::new(sfe_embed::FakeEmbedder::default()))
+            .unwrap();
+        engine.add_root(tree.path()).unwrap();
+        assert!(engine.wait_idle(Duration::from_secs(20)));
+        let st = engine.status();
+        assert_eq!(st.embedded, 2, "{st:?}");
+
+        // No keyword overlap with "planning.md"'s *name*; meaning (shared words in
+        // the body) ranks it first via the semantic strategy.
+        let r = engine.search("about the athena launch", 10, 0).unwrap();
+        assert!(!r.hits.is_empty());
+        assert_eq!(r.hits[0].name, "planning.md");
+
+        // Index persists and reloads: a second engine over the same data dir
+        // rebuilds nothing and still searches.
+        drop(engine);
+        let engine = Engine::open(data.path()).unwrap();
+        engine
+            .activate_embedder(Arc::new(sfe_embed::FakeEmbedder::default()))
+            .unwrap();
+        let r = engine.search("athena launch planning", 10, 0).unwrap();
+        assert_eq!(r.hits[0].name, "planning.md");
+        assert!(!engine.models_status().installed);
     }
 }

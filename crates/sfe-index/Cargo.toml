@@ -10,6 +10,8 @@ sfe-core.workspace = true
 sfe-db.workspace = true
 sfe-fs.workspace = true
 sfe-extract.workspace = true
+sfe-embed = { workspace = true, default-features = false }
+sfe-vector.workspace = true
 blake3 = "1"
 tokio.workspace = true
 tokio-util.workspace = true

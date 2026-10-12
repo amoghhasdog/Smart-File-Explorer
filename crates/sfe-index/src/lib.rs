@@ -14,6 +14,8 @@
 //! All blocking IO/DB work runs on `spawn_blocking`; the async tasks only
 //! coordinate.
 
+pub mod chunk;
+mod embed;
 mod metadata;
 mod status;
 mod text;
@@ -21,13 +23,15 @@ mod text;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use sfe_core::{FileId, FileKind, Root, RootId, Stage};
 use sfe_db::{Database, files, fts, jobs, roots};
+use sfe_embed::TextEmbedder;
 use sfe_extract::{Limits, Registry};
 use sfe_fs::{IgnoreRules, WalkStats};
+use sfe_vector::VectorIndex;
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -96,6 +100,9 @@ pub struct Indexer {
     db: Arc<Database>,
     cfg: IndexerConfig,
     registry: Registry,
+    /// Set once a text model is installed; `None` leaves embed jobs queued.
+    embedder: RwLock<Option<Arc<dyn TextEmbedder>>>,
+    vectors: RwLock<Option<Arc<dyn VectorIndex>>>,
     status: status::StatusHub,
     paused: AtomicBool,
     cancel: CancellationToken,
@@ -119,6 +126,8 @@ impl Indexer {
             db,
             cfg,
             registry: Registry::with_defaults(),
+            embedder: RwLock::new(None),
+            vectors: RwLock::new(None),
             status,
             paused: AtomicBool::new(false),
             cancel: CancellationToken::new(),
@@ -131,6 +140,34 @@ impl Indexer {
         &self.cfg
     }
 
+    /// Enable the embed stage. Files already past the text stage without
+    /// chunks get an embed job, so an index built before the model was
+    /// installed is back-filled.
+    pub fn set_embedder(&self, embedder: Arc<dyn TextEmbedder>, vectors: Arc<dyn VectorIndex>) {
+        *self.embedder.write().unwrap() = Some(embedder);
+        *self.vectors.write().unwrap() = Some(vectors);
+        match self.db.transaction(jobs::enqueue_missing_embed) {
+            Ok(n) if n > 0 => tracing::info!(n, "queued embed jobs for already-indexed files"),
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "backfilling embed jobs"),
+        }
+        self.refresh_status();
+        self.wake.notify_waiters();
+    }
+
+    pub fn has_embedder(&self) -> bool {
+        self.embedder.read().unwrap().is_some()
+    }
+
+    /// Persist the vector index (call on shutdown and periodically).
+    pub fn save_vectors(&self) {
+        if let Some(v) = self.vectors.read().unwrap().as_ref()
+            && let Err(e) = v.save()
+        {
+            tracing::error!(error = %e, "saving vector index");
+        }
+    }
+
     pub fn subscribe(&self) -> watch::Receiver<IndexStatus> {
         self.status.subscribe()
     }
@@ -141,8 +178,12 @@ impl Indexer {
 
     /// Recount from the database and publish.
     pub fn refresh_status(&self) {
-        self.status
-            .refresh(&self.db, self.is_paused(), &self.scanning_paths());
+        self.status.refresh(
+            &self.db,
+            self.is_paused(),
+            &self.scanning_paths(),
+            self.has_embedder(),
+        );
     }
 
     pub fn pause(&self) {
@@ -399,9 +440,30 @@ impl Indexer {
 
     /// Lease a batch and run it. Returns the number of jobs processed.
     fn work_batch(&self) -> Result<usize> {
-        let leased = self
-            .db
-            .transaction(|c| jobs::lease(c, None, self.cfg.job_batch, self.cfg.lease_secs))?;
+        let embedder = self.embedder.read().unwrap().clone();
+        let vectors = self.vectors.read().unwrap().clone();
+        let leased = self.db.transaction(|c| {
+            if embedder.is_some() {
+                jobs::lease(c, None, self.cfg.job_batch, self.cfg.lease_secs)
+            } else {
+                // No model yet: never lease embed jobs, they wait.
+                let mut l = jobs::lease(
+                    c,
+                    Some(Stage::Metadata),
+                    self.cfg.job_batch,
+                    self.cfg.lease_secs,
+                )?;
+                if l.is_empty() {
+                    l = jobs::lease(
+                        c,
+                        Some(Stage::Text),
+                        self.cfg.job_batch,
+                        self.cfg.lease_secs,
+                    )?;
+                }
+                Ok(l)
+            }
+        })?;
         if leased.is_empty() {
             return Ok(0);
         }
@@ -415,6 +477,8 @@ impl Indexer {
         let n = leased.len();
         let mut meta_results = Vec::new();
         let mut text_results = Vec::new();
+        let mut embed_results = Vec::new();
+        let reader = self.db.reader()?;
         // IO outside the write lock.
         for job in &leased {
             let rec = records.iter().find(|r| r.id == job.file_id);
@@ -434,8 +498,12 @@ impl Indexer {
                     text_results.push((job, out));
                 }
                 Stage::Embed => {
-                    // Not implemented until Phase 5; drop the job so it does not spin.
-                    text_results.push((job, text::Outcome::Unsupported));
+                    let out = match (&embedder, rec) {
+                        (Some(e), Some(_)) => embed::run(&reader, job.file_id, e.as_ref()),
+                        (Some(_), None) => embed::Outcome::Empty,
+                        (None, _) => continue,
+                    };
+                    embed_results.push((job, out));
                 }
             }
         }
@@ -445,6 +513,11 @@ impl Indexer {
             }
             for (job, out) in text_results {
                 text::apply(c, job, out)?;
+            }
+            if let (Some(e), Some(v)) = (&embedder, &vectors) {
+                for (job, out) in embed_results {
+                    embed::apply(c, job, out, e.model_id(), v)?;
+                }
             }
             Ok(())
         })?;

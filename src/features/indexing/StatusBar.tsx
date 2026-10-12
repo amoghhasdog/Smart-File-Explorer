@@ -20,6 +20,9 @@ export function StatusBar({ status }: Props) {
     text = `${formatCount(status.totalFiles)} files indexed`;
   }
   if (status.failed > 0) text += ` · ${formatCount(status.failed)} failed`;
+  if (!busy && status.waitingForModel > 0) {
+    text += ` · ${formatCount(status.waitingForModel)} waiting for semantic model`;
+  }
 
   return (
     <footer className="statusbar" aria-live="polite">

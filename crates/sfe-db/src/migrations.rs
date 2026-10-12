@@ -7,7 +7,10 @@ use rusqlite::Connection;
 
 use crate::{DbError, Result};
 
-const MIGRATIONS: &[&str] = &[include_str!("sql/v1_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("sql/v1_initial.sql"),
+    include_str!("sql/v2_chunks_autoincrement.sql"),
+];
 
 pub fn supported_version() -> i64 {
     MIGRATIONS.len() as i64

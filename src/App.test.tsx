@@ -11,6 +11,7 @@ const status: IndexStatus = {
   embedded: 0,
   failed: 0,
   pendingJobs: 0,
+  waitingForModel: 0,
   scanning: [],
   paused: false,
   lastError: null,
@@ -103,6 +104,18 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
       return response(args?.query as string, []).query;
     case "file_details":
       return details;
+    case "models_status":
+      return {
+        id: "bge",
+        display: "BGE small",
+        approxBytes: 35 * 1024 * 1024,
+        installed: false,
+        ready: false,
+        installing: false,
+        available: true,
+      };
+    case "models_install":
+      return null;
     case "file_open":
     case "file_reveal":
       return null;
@@ -134,6 +147,14 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /remove C:\\docs/i }));
     await waitFor(() => expect(screen.queryByText("C:\\docs")).toBeNull());
+  });
+
+  it("offers the semantic model download with explicit consent", async () => {
+    render(<App />);
+    const btn = await screen.findByRole("button", { name: /download model/i });
+    expect(screen.getByText(/35 MB/)).toBeTruthy();
+    fireEvent.click(btn);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("models_install", undefined));
   });
 
   it("searches as you type, shows chips and preview, opens on Enter", async () => {

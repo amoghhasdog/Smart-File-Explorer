@@ -9,6 +9,7 @@
 //! ([`roots`], [`files`], [`meta`], [`fts`], [`jobs`], [`settings`]) so they
 //! compose inside a single transaction and are trivially unit-testable.
 
+pub mod chunks;
 mod error;
 pub mod files;
 pub mod fts;

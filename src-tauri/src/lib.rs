@@ -25,6 +25,7 @@ pub fn run() {
             let engine = sfe_engine::Engine::open(&data_dir)?;
             tracing::info!(dir = %data_dir.display(), "engine ready");
             events::forward_status(app.handle().clone(), engine.subscribe_status());
+            events::forward_models(app.handle().clone(), engine.subscribe_models());
             app.manage(engine);
             Ok(())
         })
@@ -42,6 +43,8 @@ pub fn run() {
             commands::search,
             commands::search_explain,
             commands::file_details,
+            commands::models_status,
+            commands::models_install,
             commands::file_open,
             commands::file_reveal,
         ])

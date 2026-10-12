@@ -11,9 +11,10 @@
 pub mod fusion;
 mod hydrate;
 mod keyword;
+pub mod semantic;
 pub mod sql;
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
 use sfe_core::{Category, FileId};
@@ -21,6 +22,7 @@ use sfe_db::Database;
 use sfe_query::Query;
 
 pub use hydrate::Hit;
+pub use semantic::SemanticText;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
@@ -67,19 +69,29 @@ pub struct SearchResponse {
 
 pub struct Searcher {
     db: Arc<Database>,
-    strategies: Vec<Box<dyn SearchStrategy>>,
+    strategies: RwLock<Vec<Box<dyn SearchStrategy>>>,
 }
 
 impl Searcher {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             db,
-            strategies: vec![Box::new(keyword::Keyword)],
+            strategies: RwLock::new(vec![Box::new(keyword::Keyword)]),
         }
     }
 
-    pub fn add_strategy(&mut self, s: Box<dyn SearchStrategy>) {
-        self.strategies.push(s);
+    /// Register another strategy (e.g. semantic search once a model loads).
+    pub fn add_strategy(&self, s: Box<dyn SearchStrategy>) {
+        self.strategies.write().unwrap().push(s);
+    }
+
+    pub fn strategy_names(&self) -> Vec<&'static str> {
+        self.strategies
+            .read()
+            .unwrap()
+            .iter()
+            .map(|s| s.name())
+            .collect()
     }
 
     /// Run `q` and return a page of hydrated hits.
@@ -95,7 +107,8 @@ impl Searcher {
         } else {
             let mut lists = Vec::new();
             let mut snippets = std::collections::HashMap::new();
-            for s in &self.strategies {
+            let strategies = self.strategies.read().unwrap();
+            for s in strategies.iter() {
                 if !s.applies(q) {
                     continue;
                 }

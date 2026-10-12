@@ -3,7 +3,7 @@
 use std::sync::Mutex;
 
 use serde::Serialize;
-use sfe_core::{IndexState, RootId};
+use sfe_core::{IndexState, RootId, Stage};
 use sfe_db::{Database, files, jobs};
 use tokio::sync::watch;
 
@@ -17,7 +17,10 @@ pub struct IndexStatus {
     pub text: u64,
     pub embedded: u64,
     pub failed: u64,
+    /// Jobs that can run now.
     pub pending_jobs: u64,
+    /// Embed jobs parked until a semantic model is installed.
+    pub waiting_for_model: u64,
     /// Roots currently being walked.
     pub scanning: Vec<RootId>,
     pub paused: bool,
@@ -42,7 +45,7 @@ impl StatusHub {
             tx: watch::channel(IndexStatus::default()).0,
             last_error: Mutex::new(None),
         };
-        hub.refresh(db, false, &[]);
+        hub.refresh(db, false, &[], false);
         hub
     }
 
@@ -58,10 +61,23 @@ impl StatusHub {
         *self.last_error.lock().unwrap() = Some(e);
     }
 
-    pub fn refresh(&self, db: &Database, paused: bool, scanning: &[RootId]) {
+    pub fn refresh(&self, db: &Database, paused: bool, scanning: &[RootId], model_ready: bool) {
         let counted = {
             let conn = db.writer();
-            files::count_by_state(&conn).and_then(|s| jobs::count_pending(&conn).map(|p| (s, p)))
+            files::count_by_state(&conn).and_then(|s| {
+                jobs::count_by_stage(&conn).map(|by_stage| {
+                    let mut pending = 0;
+                    let mut waiting = 0;
+                    for (stage, n) in by_stage {
+                        if stage == Stage::Embed && !model_ready {
+                            waiting += n;
+                        } else {
+                            pending += n;
+                        }
+                    }
+                    (s, pending, waiting)
+                })
+            })
         };
         let mut st = IndexStatus {
             paused,
@@ -70,7 +86,8 @@ impl StatusHub {
             ..Default::default()
         };
         match counted {
-            Ok((states, pending)) => {
+            Ok((states, pending, waiting)) => {
+                st.waiting_for_model = waiting;
                 for (state, n) in states {
                     st.total_files += n;
                     match state {

@@ -5,7 +5,9 @@
 
 use serde::Serialize;
 use sfe_core::{FileId, Root, RootId};
-use sfe_engine::{Engine, EngineError, FileDetails, IndexStatus, Query, SearchResponse};
+use sfe_engine::{
+    Engine, EngineError, FileDetails, IndexStatus, ModelStatus, Query, SearchResponse,
+};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -27,6 +29,8 @@ impl From<EngineError> for IpcError {
             EngineError::Fs(_) => "filesystem",
             EngineError::Index(_) => "index",
             EngineError::Search(_) => "search",
+            EngineError::Embed(_) => "model",
+            EngineError::Vector(_) => "vector_index",
             EngineError::Runtime(_) => "runtime",
             EngineError::NestedRoot(..) => "nested_root",
             EngineError::NoSuchRoot(_) => "no_such_root",
@@ -145,6 +149,17 @@ pub async fn file_details(engine: State<'_, Engine>, id: FileId) -> IpcResult<Op
             message: e.to_string(),
         })?
         .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub async fn models_status(engine: State<'_, Engine>) -> IpcResult<ModelStatus> {
+    Ok(engine.models_status())
+}
+
+/// The user consented to downloading the text model (~35 MB, one time).
+#[tauri::command]
+pub async fn models_install(engine: State<'_, Engine>) -> IpcResult<()> {
+    Ok(engine.models_install()?)
 }
 
 /// Open a file with its default application. The path comes from the index,

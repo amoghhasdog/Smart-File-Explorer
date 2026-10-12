@@ -25,6 +25,7 @@ export interface IndexStatus {
   embedded: number;
   failed: number;
   pendingJobs: number;
+  waitingForModel: number;
   scanning: RootId[];
   paused: boolean;
   lastError: string | null;
@@ -120,6 +121,24 @@ export interface FileDetails {
   extractor: string | null;
 }
 
+export interface ModelStatus {
+  id: string;
+  display: string;
+  approxBytes: number;
+  installed: boolean;
+  ready: boolean;
+  installing: boolean;
+  available: boolean;
+}
+
+export interface ModelProgress {
+  id: string;
+  bytes: number;
+  approxTotal: number;
+  done: boolean;
+  error: string | null;
+}
+
 export interface IpcError {
   code: string;
   message: string;
@@ -150,6 +169,11 @@ export const ipc = {
   fileOpen: (id: FileId) => invoke<void>("file_open", { id }),
   fileReveal: (id: FileId) => invoke<void>("file_reveal", { id }),
 
+  modelsStatus: () => invoke<ModelStatus>("models_status"),
+  modelsInstall: () => invoke<void>("models_install"),
+
   onIndexStatus: (cb: (s: IndexStatus) => void): Promise<UnlistenFn> =>
     listen<IndexStatus>("index-status", (e) => cb(e.payload)),
+  onModelProgress: (cb: (p: ModelProgress) => void): Promise<UnlistenFn> =>
+    listen<ModelProgress>("model-progress", (e) => cb(e.payload)),
 };

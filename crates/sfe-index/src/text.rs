@@ -4,7 +4,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use sfe_core::{FileMeta, FileRecord, IndexState, Job};
+use sfe_core::{FileMeta, FileRecord, IndexState, Job, Stage};
 use sfe_db::{Result, files, fts, jobs, meta, rusqlite::Connection};
 use sfe_extract::{ExtractError, FileInput, FileProbe, Limits, Registry};
 
@@ -115,6 +115,9 @@ pub(crate) fn apply(c: &Connection, job: &Job, out: Outcome) -> Result<()> {
                     files::set_content_hash(c, rec.id, &h)?;
                 }
                 files::set_state(c, rec.id, IndexState::Text, None)?;
+                if !text.is_empty() {
+                    jobs::enqueue(c, rec.id, Stage::Embed, job.priority)?;
+                }
             }
             jobs::complete(c, job.id)?;
         }
