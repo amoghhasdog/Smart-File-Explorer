@@ -51,7 +51,7 @@ fn downloads_loads_and_embeds_meaningfully() {
 #[test]
 #[ignore = "downloads ~600 MB; run explicitly"]
 fn clip_image_and_text_towers_agree() {
-    use sfe_embed::{IMAGE_MODEL, ImageEmbedder};
+    use sfe_embed::IMAGE_MODEL;
     let dir = tempfile::tempdir().unwrap();
     let mgr = Arc::new(ModelManager::new(dir.path()));
     let clip = mgr
