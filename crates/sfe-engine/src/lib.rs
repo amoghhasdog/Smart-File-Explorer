@@ -1,13 +1,23 @@
 //! Application engine façade.
 //!
-//! Owns the database (and, in later phases, the indexing pipeline, embedders
-//! and search orchestrator) and exposes a small API that the Tauri shell and
-//! integration tests call.
+//! Owns the database, the indexing pipeline, the filesystem watcher and its
+//! own small tokio runtime, so background work never competes with the UI
+//! runtime. The Tauri shell (and integration tests) talk only to [`Engine`].
+
+mod search;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use sfe_db::Database;
+use sfe_core::{FileId, FileRecord, Root, RootId};
+use sfe_db::{Database, files, fts, roots};
+use sfe_fs::{FsChange, Watcher};
+pub use sfe_index::IndexStatus;
+use sfe_index::{Indexer, IndexerConfig};
+use tokio::sync::watch;
+
+pub use search::SearchHit;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -15,32 +25,87 @@ pub enum EngineError {
     DataDir(PathBuf, std::io::Error),
     #[error(transparent)]
     Db(#[from] sfe_db::DbError),
+    #[error(transparent)]
+    Fs(#[from] sfe_fs::FsError),
+    #[error(transparent)]
+    Index(#[from] sfe_index::IndexError),
+    #[error("could not start background runtime: {0}")]
+    Runtime(std::io::Error),
+    #[error("{0} is already covered by indexed folder {1}")]
+    NestedRoot(String, String),
+    #[error("no such folder id {0}")]
+    NoSuchRoot(RootId),
 }
 
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Engine {
     inner: Arc<Inner>,
 }
 
-#[derive(Debug)]
 struct Inner {
     data_dir: PathBuf,
-    db: Database,
+    db: Arc<Database>,
+    indexer: Arc<Indexer>,
+    rt: tokio::runtime::Runtime,
+    watcher: Mutex<Watcher>,
+}
+
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine")
+            .field("data_dir", &self.inner.data_dir)
+            .finish()
+    }
 }
 
 impl Engine {
-    /// Open the engine with all state under `data_dir` (created if missing).
+    /// Open the engine with all state under `data_dir` (created if missing),
+    /// start the stage workers, watch every enabled root and kick off an
+    /// incremental scan of each.
     pub fn open(data_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with(data_dir, IndexerConfig::default())
+    }
+
+    pub fn open_with(data_dir: impl AsRef<Path>, cfg: IndexerConfig) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| EngineError::DataDir(data_dir.clone(), e))?;
-        let db = Database::open(data_dir.join("index.db"))?;
+        let db = Arc::new(Database::open(data_dir.join("index.db"))?);
         db.quick_check()?;
-        Ok(Self {
-            inner: Arc::new(Inner { data_dir, db }),
-        })
+        // Leases from a previous (crashed) run are stale.
+        db.transaction(|c| sfe_db::jobs::release_all(c).map(|_| ()))?;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("sfe-engine")
+            .enable_all()
+            .build()
+            .map_err(EngineError::Runtime)?;
+        let indexer = Indexer::new(Arc::clone(&db), cfg);
+        let (watcher, changes) = Watcher::new(Duration::from_secs(2))?;
+
+        let engine = Self {
+            inner: Arc::new(Inner {
+                data_dir,
+                db,
+                indexer,
+                rt,
+                watcher: Mutex::new(watcher),
+            }),
+        };
+        engine.inner.rt.block_on(async {
+            engine.inner.indexer.spawn_workers();
+        });
+        engine.spawn_change_pump(changes);
+        for root in engine.list_roots()? {
+            if root.enabled {
+                engine.watch_root(&root);
+                engine.spawn_scan(root);
+            }
+        }
+        Ok(engine)
     }
 
     pub fn data_dir(&self) -> &Path {
@@ -50,11 +115,196 @@ impl Engine {
     pub fn db(&self) -> &Database {
         &self.inner.db
     }
+
+    // ----- roots -----------------------------------------------------------
+
+    pub fn list_roots(&self) -> Result<Vec<Root>> {
+        Ok(roots::list(&self.inner.db.writer())?)
+    }
+
+    /// Register a folder, start watching it and scan it in the background.
+    /// Rejects folders nested inside (or containing) an existing root.
+    pub fn add_root(&self, path: impl AsRef<Path>) -> Result<Root> {
+        let canon = sfe_fs::canonical_root(path)?;
+        let existing = self.list_roots()?;
+        for r in &existing {
+            if r.path == canon {
+                return Ok(r.clone());
+            }
+            if is_under(&canon, &r.path) {
+                return Err(EngineError::NestedRoot(canon, r.path.clone()));
+            }
+            if is_under(&r.path, &canon) {
+                return Err(EngineError::NestedRoot(r.path.clone(), canon));
+            }
+        }
+        let root = self.inner.db.transaction(|c| roots::add(c, &canon))?;
+        tracing::info!(path = %root.path, id = %root.id, "root added");
+        self.watch_root(&root);
+        self.spawn_scan(root.clone());
+        Ok(root)
+    }
+
+    /// Stop watching and delete the root with everything indexed under it.
+    pub fn remove_root(&self, id: RootId) -> Result<()> {
+        let root = roots::get(&self.inner.db.writer(), id)?.ok_or(EngineError::NoSuchRoot(id))?;
+        if let Ok(mut w) = self.inner.watcher.lock() {
+            let _ = w.unwatch(Path::new(&root.path));
+        }
+        self.inner.db.transaction(|c| {
+            fts::delete_for_root(c, id)?;
+            roots::remove(c, id)?;
+            Ok(())
+        })?;
+        self.inner.indexer.refresh_status();
+        tracing::info!(path = %root.path, "root removed");
+        Ok(())
+    }
+
+    pub fn rescan(&self, id: RootId) -> Result<()> {
+        let root = roots::get(&self.inner.db.writer(), id)?.ok_or(EngineError::NoSuchRoot(id))?;
+        self.spawn_scan(root);
+        Ok(())
+    }
+
+    // ----- indexing --------------------------------------------------------
+
+    pub fn status(&self) -> IndexStatus {
+        self.inner.indexer.status()
+    }
+
+    pub fn subscribe_status(&self) -> watch::Receiver<IndexStatus> {
+        self.inner.indexer.subscribe()
+    }
+
+    pub fn pause(&self) {
+        self.inner.indexer.pause();
+    }
+
+    pub fn resume(&self) {
+        self.inner.indexer.resume();
+    }
+
+    /// Block until no scan is running and no jobs are pending (tests / CLI).
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        let mut rx = self.subscribe_status();
+        self.inner.rt.block_on(async {
+            tokio::time::timeout(timeout, async {
+                loop {
+                    if !rx.borrow_and_update().busy() {
+                        return;
+                    }
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            })
+            .await
+            .is_ok()
+        })
+    }
+
+    // ----- files & search --------------------------------------------------
+
+    pub fn file(&self, id: FileId) -> Result<Option<FileRecord>> {
+        Ok(files::get(&self.inner.db.reader()?, id)?)
+    }
+
+    /// Keyword search over names and extracted text. Phase 4 replaces this
+    /// with the full natural-language pipeline.
+    pub fn search(&self, query: &str, limit: usize, offset: usize) -> Result<Vec<SearchHit>> {
+        search::keyword(&self.inner.db, query, limit, offset)
+    }
+
+    // ----- internals -------------------------------------------------------
+
+    fn watch_root(&self, root: &Root) {
+        match self.inner.watcher.lock() {
+            Ok(mut w) => {
+                if let Err(e) = w.watch(Path::new(&root.path)) {
+                    tracing::warn!(path = %root.path, error = %e, "could not watch root");
+                }
+            }
+            Err(_) => tracing::error!("watcher mutex poisoned"),
+        }
+    }
+
+    fn spawn_scan(&self, root: Root) {
+        self.inner
+            .indexer
+            .request_scan(self.inner.rt.handle(), root);
+    }
+
+    /// Forward watcher batches to the indexer, grouped by root.
+    fn spawn_change_pump(&self, changes: std::sync::mpsc::Receiver<FsChange>) {
+        let weak = Arc::downgrade(&self.inner);
+        std::thread::Builder::new()
+            .name("sfe-fs-changes".into())
+            .spawn(move || {
+                while let Ok(change) = changes.recv() {
+                    let Some(inner) = weak.upgrade() else { break };
+                    let roots = match roots::list(&inner.db.writer()) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!(error = %e, "listing roots for change pump");
+                            continue;
+                        }
+                    };
+                    if change.rescan {
+                        for root in roots {
+                            inner.indexer.request_scan(inner.rt.handle(), root);
+                        }
+                        continue;
+                    }
+                    for root in roots {
+                        let mine: Vec<PathBuf> = change
+                            .paths
+                            .iter()
+                            .filter(|p| p.starts_with(&root.path))
+                            .cloned()
+                            .collect();
+                        if mine.is_empty() {
+                            continue;
+                        }
+                        let indexer = Arc::clone(&inner.indexer);
+                        inner.rt.spawn(async move {
+                            if let Err(e) = indexer.reconcile(&root, mine).await {
+                                tracing::warn!(error = %e, "reconcile failed");
+                            }
+                        });
+                    }
+                }
+                tracing::debug!("change pump stopped");
+            })
+            .expect("spawn change pump thread");
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.indexer.shutdown();
+    }
+}
+
+/// Is `path` strictly inside `dir`? Compares on separator boundaries,
+/// case-insensitively (NTFS).
+fn is_under(path: &str, dir: &str) -> bool {
+    let (p, d) = (path.to_lowercase(), dir.to_lowercase());
+    p.len() > d.len() && p.starts_with(&d) && matches!(p.as_bytes()[d.len()], b'\\' | b'/')
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_under_checks_boundaries() {
+        assert!(is_under(r"C:\a\b", r"C:\a"));
+        assert!(is_under(r"C:\A\b\c", r"c:\a"));
+        assert!(!is_under(r"C:\ab", r"C:\a"));
+        assert!(!is_under(r"C:\a", r"C:\a"));
+        assert!(!is_under(r"C:\a", r"C:\a\b"));
+    }
 
     #[test]
     fn open_creates_data_dir_and_database() {
@@ -63,7 +313,67 @@ mod tests {
         let engine = Engine::open(&data).unwrap();
         assert!(data.join("index.db").exists());
         assert_eq!(engine.data_dir(), data);
-        // Reopen is fine.
+        drop(engine);
         Engine::open(&data).unwrap();
+    }
+
+    #[test]
+    fn add_root_scans_and_name_search_works_end_to_end() {
+        let data = tempfile::tempdir().unwrap();
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tree.path().join("projects/athena")).unwrap();
+        std::fs::write(tree.path().join("projects/athena/Athena roadmap.md"), "x").unwrap();
+        std::fs::write(tree.path().join("holiday.jpg"), b"\xff\xd8\xff").unwrap();
+
+        let engine = Engine::open(data.path()).unwrap();
+        let root = engine.add_root(tree.path()).unwrap();
+        assert!(engine.wait_idle(Duration::from_secs(15)));
+
+        let st = engine.status();
+        assert_eq!(st.total_files, 2);
+        assert_eq!(st.metadata, 2);
+
+        let hits = engine.search("athena road", 10, 0).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].name, "Athena roadmap.md");
+        assert_eq!(hits[0].category, sfe_core::Category::Document);
+
+        // nested root rejected, duplicate returns same root
+        assert!(matches!(
+            engine.add_root(tree.path().join("projects")),
+            Err(EngineError::NestedRoot(..))
+        ));
+        assert_eq!(engine.add_root(tree.path()).unwrap().id, root.id);
+
+        engine.remove_root(root.id).unwrap();
+        assert!(engine.list_roots().unwrap().is_empty());
+        assert!(engine.search("athena", 10, 0).unwrap().is_empty());
+        assert!(matches!(
+            engine.remove_root(root.id),
+            Err(EngineError::NoSuchRoot(_))
+        ));
+    }
+
+    #[test]
+    fn watcher_picks_up_new_files() {
+        let data = tempfile::tempdir().unwrap();
+        let tree = tempfile::tempdir().unwrap();
+        let engine = Engine::open(data.path()).unwrap();
+        engine.add_root(tree.path()).unwrap();
+        assert!(engine.wait_idle(Duration::from_secs(15)));
+        std::thread::sleep(Duration::from_millis(300));
+
+        std::fs::write(tree.path().join("Ferrari spec.txt"), "v12").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if !engine.search("ferrari", 10, 0).unwrap().is_empty() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watcher never indexed the file"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
 }

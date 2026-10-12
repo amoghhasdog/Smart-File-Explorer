@@ -4,6 +4,7 @@
 //! database, or search logic lives here.
 
 mod commands;
+mod events;
 
 use tauri::Manager;
 
@@ -18,16 +19,29 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             let engine = sfe_engine::Engine::open(&data_dir)?;
             tracing::info!(dir = %data_dir.display(), "engine ready");
+            events::forward_status(app.handle().clone(), engine.subscribe_status());
             app.manage(engine);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
-            commands::data_dir
+            commands::data_dir,
+            commands::roots_list,
+            commands::roots_add,
+            commands::roots_pick_and_add,
+            commands::roots_remove,
+            commands::index_status,
+            commands::index_pause,
+            commands::index_resume,
+            commands::index_rescan,
+            commands::search,
+            commands::file_open,
+            commands::file_reveal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

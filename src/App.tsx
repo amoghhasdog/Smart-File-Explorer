@@ -1,18 +1,45 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { ipc, type IndexStatus } from "./lib/ipc";
+import { FoldersPanel } from "./features/folders/FoldersPanel";
+import { StatusBar } from "./features/indexing/StatusBar";
+import { SearchView } from "./features/search/SearchView";
 import "./App.css";
 
 export default function App() {
-  const [version, setVersion] = useState<string | null>(null);
+  const [status, setStatus] = useState<IndexStatus | null>(null);
 
   useEffect(() => {
-    invoke<string>("app_version").then(setVersion).catch(() => setVersion("?"));
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    ipc
+      .onIndexStatus((s) => {
+        if (!cancelled) setStatus(s);
+      })
+      .then((u) => {
+        unlisten = u;
+      });
+    ipc
+      .indexStatus()
+      .then((s) => {
+        if (!cancelled) setStatus((cur) => cur ?? s);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   return (
-    <main className="shell">
-      <h1>Smart File Explorer</h1>
-      <p className="muted">Phase 0 skeleton · backend v{version ?? "…"}</p>
-    </main>
+    <div className="app">
+      <aside className="sidebar">
+        <h1 className="brand">Smart File Explorer</h1>
+        <FoldersPanel status={status} />
+      </aside>
+      <main className="main">
+        <SearchView />
+      </main>
+      <StatusBar status={status} />
+    </div>
   );
 }

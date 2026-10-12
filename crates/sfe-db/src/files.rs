@@ -125,6 +125,35 @@ pub fn tombstone_unseen(
     Ok(ids)
 }
 
+/// Tombstone live files under directory `dir` (and `dir` itself when
+/// `include_self`) whose `updated_at` predates `scan_started_at`. Pass
+/// `i64::MAX` to tombstone unconditionally (directory removed). Matches on
+/// path prefix followed by a separator, so `C:/a/b` does not match `C:/a/bc`.
+pub fn tombstone_under(
+    conn: &Connection,
+    root: RootId,
+    dir: &str,
+    include_self: bool,
+    scan_started_at: i64,
+) -> Result<Vec<FileId>> {
+    let len = dir.chars().count() as i64;
+    let mut stmt = conn.prepare(
+        "UPDATE files SET deleted = 1
+         WHERE root_id = ?1 AND deleted = 0 AND updated_at < ?2
+           AND ((substr(path, 1, ?3) = ?4 AND substr(path, ?3 + 1, 1) IN ('\\', '/'))
+                OR (?5 AND path = ?4))
+         RETURNING id",
+    )?;
+    let ids = stmt
+        .query_map(
+            params![root.0, scan_started_at, len, dir, include_self as i64],
+            |r| r.get::<_, i64>(0),
+        )?
+        .map(|r| r.map(FileId))
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
 /// Tombstone a single path (watcher delete event). Returns the id if it existed.
 pub fn tombstone_path(conn: &Connection, path: &str) -> Result<Option<FileId>> {
     Ok(conn
@@ -312,6 +341,45 @@ pub(crate) mod tests {
         assert!(!get(&c, kept[0].id).unwrap().unwrap().deleted);
         assert!(!get_by_path(&c, "C:/r2/other.txt").unwrap().unwrap().deleted);
         assert_eq!(count_live(&c).unwrap(), 2);
+    }
+
+    #[test]
+    fn tombstone_under_respects_separator_boundary_and_include_self() {
+        let (_d, db) = temp_db();
+        let c = db.writer();
+        let root = roots::add(&c, "C:/r").unwrap();
+        let mut dir = disc(root.id, "C:/r/sub");
+        dir.kind = FileKind::Dir;
+        dir.ext.clear();
+        upsert_discovered(
+            &c,
+            &[
+                dir,
+                disc(root.id, "C:/r/sub/a.txt"),
+                disc(root.id, "C:/r/sub/deep/b.txt"),
+                disc(root.id, "C:/r/subway.txt"),
+                disc(root.id, "C:/r/top.txt"),
+            ],
+        )
+        .unwrap();
+        let gone = tombstone_under(&c, root.id, "C:/r/sub", false, i64::MAX).unwrap();
+        assert_eq!(gone.len(), 2);
+        assert!(!get_by_path(&c, "C:/r/sub").unwrap().unwrap().deleted);
+        assert!(!get_by_path(&c, "C:/r/subway.txt").unwrap().unwrap().deleted);
+        assert!(
+            get_by_path(&c, "C:/r/sub/deep/b.txt")
+                .unwrap()
+                .unwrap()
+                .deleted
+        );
+
+        let gone = tombstone_under(&c, root.id, "C:/r/sub", true, i64::MAX).unwrap();
+        assert_eq!(gone.len(), 1);
+        assert!(get_by_path(&c, "C:/r/sub").unwrap().unwrap().deleted);
+
+        // scan_started_at in the past tombstones nothing
+        let none = tombstone_under(&c, root.id, "C:/r", false, 0).unwrap();
+        assert!(none.is_empty());
     }
 
     #[test]

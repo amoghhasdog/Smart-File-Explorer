@@ -10,11 +10,10 @@ sfe-core.workspace = true
 sfe-db.workspace = true
 sfe-fs.workspace = true
 sfe-index.workspace = true
-sfe-search.workspace = true
-sfe-embed.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

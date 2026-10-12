@@ -136,6 +136,19 @@ pub fn clear_for_file(conn: &Connection, file: FileId) -> Result<()> {
     Ok(())
 }
 
+pub fn clear_for_files(conn: &Connection, files: &[FileId]) -> Result<()> {
+    let mut stmt = conn.prepare_cached("DELETE FROM jobs WHERE file_id = ?1")?;
+    for f in files {
+        stmt.execute([f.0])?;
+    }
+    Ok(())
+}
+
+pub fn count_pending(conn: &Connection) -> Result<u64> {
+    let n: i64 = conn.query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))?;
+    Ok(n.max(0) as u64)
+}
+
 /// Pending jobs per stage, for progress reporting.
 pub fn count_by_stage(conn: &Connection) -> Result<Vec<(Stage, u64)>> {
     let mut stmt =
