@@ -5150,6 +5150,7 @@ name = "sfe-embed"
 version = "0.1.0"
 dependencies = [
  "fastembed",
+ "image",
  "serde",
  "sfe-core",
  "tempfile",
@@ -5161,6 +5162,7 @@ dependencies = [
 name = "sfe-engine"
 version = "0.1.0"
 dependencies = [
+ "image",
  "serde",
  "sfe-core",
  "sfe-db",

@@ -1,7 +1,7 @@
 // Typed wrappers around Tauri IPC. This is the only module that imports
 // `@tauri-apps/api`; components depend on these functions so tests can mock
 // one place.
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type RootId = number;
@@ -121,8 +121,11 @@ export interface FileDetails {
   extractor: string | null;
 }
 
+export type ModelKind = "text" | "image";
+
 export interface ModelStatus {
   id: string;
+  kind: ModelKind;
   display: string;
   approxBytes: number;
   installed: boolean;
@@ -169,8 +172,11 @@ export const ipc = {
   fileOpen: (id: FileId) => invoke<void>("file_open", { id }),
   fileReveal: (id: FileId) => invoke<void>("file_reveal", { id }),
 
-  modelsStatus: () => invoke<ModelStatus>("models_status"),
-  modelsInstall: () => invoke<void>("models_install"),
+  modelsStatus: () => invoke<ModelStatus[]>("models_status"),
+  modelsInstall: (kind: ModelKind) => invoke<void>("models_install", { kind }),
+
+  /** URL of a file's thumbnail (served by the `thumb` protocol). */
+  thumbUrl: (id: FileId) => convertFileSrc(String(id), "thumb"),
 
   onIndexStatus: (cb: (s: IndexStatus) => void): Promise<UnlistenFn> =>
     listen<IndexStatus>("index-status", (e) => cb(e.payload)),

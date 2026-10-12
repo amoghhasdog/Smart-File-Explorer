@@ -1,55 +1,98 @@
-//! Semantic text strategy: embed the query, find nearest chunks in the ANN
+//! Semantic strategies: embed the query, find nearest chunks in an ANN
 //! index, map to files, apply the structured filters, keep the best chunk
-//! score per file.
+//! score per file. One instance per modality (text chunks, image vectors).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sfe_core::{ChunkId, FileId};
+use sfe_core::{Category, ChunkId, FileId};
 use sfe_db::chunks;
 use sfe_db::rusqlite::{Connection, params_from_iter, types::Value};
-use sfe_embed::TextEmbedder;
+use sfe_embed::{ImageEmbedder, TextEmbedder};
 use sfe_query::Query;
 use sfe_vector::VectorIndex;
 
 use crate::{Candidate, Result, SearchStrategy, sql};
 
-pub struct SemanticText {
-    embedder: Arc<dyn TextEmbedder>,
+type QueryEmbedFn = Box<dyn Fn(&str) -> sfe_embed::Result<Vec<f32>> + Send + Sync>;
+
+pub struct Semantic {
+    name: &'static str,
+    embed_query: QueryEmbedFn,
     index: Arc<dyn VectorIndex>,
+    /// Only consult this strategy when images are in scope.
+    images_only: bool,
 }
 
-impl SemanticText {
-    pub fn new(embedder: Arc<dyn TextEmbedder>, index: Arc<dyn VectorIndex>) -> Self {
-        Self { embedder, index }
+impl Semantic {
+    /// Text chunks embedded with a text model.
+    pub fn text(embedder: Arc<dyn TextEmbedder>, index: Arc<dyn VectorIndex>) -> Self {
+        Self {
+            name: "semantic-text",
+            embed_query: Box::new(move |q| embedder.embed_query(q)),
+            index,
+            images_only: false,
+        }
     }
 
-    /// The text to embed: an explicit topic, else the loose terms.
-    fn query_text(q: &Query) -> Option<String> {
+    /// Images embedded with a joint image/text model; queries go through
+    /// its text tower.
+    pub fn image(embedder: Arc<dyn ImageEmbedder>, index: Arc<dyn VectorIndex>) -> Self {
+        Self {
+            name: "semantic-image",
+            embed_query: Box::new(move |q| embedder.embed_text(q)),
+            index,
+            images_only: true,
+        }
+    }
+
+    /// The text to embed: an explicit topic, else the loose terms, else —
+    /// for images — the colour name ("a lot of blue" alone is a fine CLIP query).
+    fn query_text(&self, q: &Query) -> Option<String> {
         q.semantic
             .clone()
             .or_else(|| (!q.terms.is_empty()).then(|| q.terms.join(" ")))
+            .or_else(|| {
+                self.images_only
+                    .then(|| {
+                        q.filters
+                            .color
+                            .as_ref()
+                            .map(|c| format!("{} colour", c.name))
+                    })
+                    .flatten()
+            })
             .filter(|s| !s.trim().is_empty())
     }
 }
 
-impl SearchStrategy for SemanticText {
+/// Backwards-compatible aliases.
+pub type SemanticText = Semantic;
+
+impl SearchStrategy for Semantic {
     fn name(&self) -> &'static str {
-        "semantic-text"
+        self.name
     }
 
     fn applies(&self, q: &Query) -> bool {
-        Self::query_text(q).is_some() && !self.index.is_empty()
+        if self.index.is_empty() || self.query_text(q).is_none() {
+            return false;
+        }
+        if self.images_only {
+            q.filters.categories.is_empty() || q.filters.categories.contains(&Category::Image)
+        } else {
+            true
+        }
     }
 
     fn run(&self, conn: &Connection, q: &Query, k: usize) -> Result<Vec<Candidate>> {
-        let Some(text) = Self::query_text(q) else {
+        let Some(text) = self.query_text(q) else {
             return Ok(vec![]);
         };
-        let qv = match self.embedder.embed_query(&text) {
+        let qv = match (self.embed_query)(&text) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error = %e, "query embedding failed");
+                tracing::warn!(strategy = self.name, error = %e, "query embedding failed");
                 return Ok(vec![]);
             }
         };
@@ -57,7 +100,7 @@ impl SearchStrategy for SemanticText {
         let neighbours = match self.index.search(&qv, (k * 4).max(50)) {
             Ok(n) => n,
             Err(e) => {
-                tracing::warn!(error = %e, "vector search failed");
+                tracing::warn!(strategy = self.name, error = %e, "vector search failed");
                 return Ok(vec![]);
             }
         };
@@ -65,10 +108,9 @@ impl SearchStrategy for SemanticText {
             return Ok(vec![]);
         }
         let ids: Vec<ChunkId> = neighbours.iter().map(|n| ChunkId(n.key as i64)).collect();
-        let mapping = chunks::file_ids(conn, &ids)?;
-        let chunk_to_file: HashMap<ChunkId, FileId> = mapping.into_iter().collect();
+        let chunk_to_file: HashMap<ChunkId, FileId> =
+            chunks::file_ids(conn, &ids)?.into_iter().collect();
 
-        // Best score per file.
         let mut best: HashMap<FileId, f64> = HashMap::new();
         for n in &neighbours {
             if let Some(f) = chunk_to_file.get(&ChunkId(n.key as i64)) {

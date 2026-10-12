@@ -45,3 +45,29 @@ fn downloads_loads_and_embeds_meaningfully() {
     let reloaded = mgr.load_text(&TEXT_MODEL).expect("offline load");
     assert_eq!(reloaded.model_id(), embedder.model_id());
 }
+
+/// CLIP is ~600 MB; run only when you want to validate the image path:
+/// `cargo test -p sfe-embed --test real_model clip -- --ignored`
+#[test]
+#[ignore = "downloads ~600 MB; run explicitly"]
+fn clip_image_and_text_towers_agree() {
+    use sfe_embed::{IMAGE_MODEL, ImageEmbedder};
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(ModelManager::new(dir.path()));
+    let clip = mgr
+        .install_image(&IMAGE_MODEL, |_| {})
+        .expect("install clip");
+    assert_eq!(clip.dim(), 512);
+    let blue = sfe_embed::DynamicImage::ImageRgb8(image_blob([20, 40, 230]));
+    let red = sfe_embed::DynamicImage::ImageRgb8(image_blob([230, 30, 20]));
+    let v = clip.embed_images(vec![blue, red]).unwrap();
+    let q = clip.embed_text("a solid blue square").unwrap();
+    assert!(
+        cosine(&q, &v[0]) > cosine(&q, &v[1]),
+        "blue query should prefer the blue image"
+    );
+}
+
+fn image_blob(rgb: [u8; 3]) -> image::RgbImage {
+    image::RgbImage::from_pixel(64, 64, image::Rgb(rgb))
+}

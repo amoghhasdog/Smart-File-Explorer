@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ipc, isIpcError, type FileDetails, type FileId } from "../../lib/ipc";
+import { Thumb } from "./Thumb";
 import {
   formatBytes,
   formatDateTime,
@@ -81,6 +82,7 @@ export function PreviewPane({ fileId }: Props) {
       <div className="preview-path muted" title={r.path}>
         {r.parent_path}
       </div>
+      {r.category === "image" && <Thumb id={r.id} alt={r.name} className="preview-thumb" />}
       <div className="preview-actions">
         <button onClick={() => ipc.fileOpen(r.id)}>Open</button>
         <button onClick={() => ipc.fileReveal(r.id)}>Show in Explorer</button>

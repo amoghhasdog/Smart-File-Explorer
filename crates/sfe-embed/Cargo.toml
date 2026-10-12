@@ -16,9 +16,11 @@ thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
 fastembed = { version = "7", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

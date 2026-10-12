@@ -318,6 +318,10 @@ pub trait VectorIndex: Send + Sync { fn add(&self, id: u64, v: &[f32]); fn remov
 - **Model download**: fastembed/hf-hub fetch the pinned model repo into `<data_dir>/models` on consent; a
   marker file records a completed install and later loads are offline. We rely on hf-hub's
   content-addressed blobs rather than a custom SHA-256 manifest (follow-up: add one when bundling).
+- **Image semantics** use fastembed's CLIP ViT-B/32 vision tower for files and its text tower for queries
+  (512-d, separate `image-*.usearch` index). Thumbnails (≤512 px JPEG under `<data_dir>/thumbs`) are made
+  in the text stage and are what CLIP embeds; the app shell serves them to the UI via a `thumb://`
+  protocol that only accepts a file id. The image model (~600 MB) is a separate, optional consent.
 - **Embed jobs without a model** are parked (never leased) and reported as `waiting_for_model`, so the
   index still reads "idle" for everything a user can act on.
 

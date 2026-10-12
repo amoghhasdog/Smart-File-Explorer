@@ -12,6 +12,7 @@ sfe-fs.workspace = true
 sfe-extract.workspace = true
 sfe-embed = { workspace = true, default-features = false }
 sfe-vector.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff"] }
 blake3 = "1"
 tokio.workspace = true
 tokio-util.workspace = true
@@ -23,7 +24,6 @@ infer = "0.19"
 [dev-dependencies]
 tempfile.workspace = true
 dunce = "1"
-image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

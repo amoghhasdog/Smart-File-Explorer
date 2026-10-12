@@ -105,15 +105,28 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     case "file_details":
       return details;
     case "models_status":
-      return {
-        id: "bge",
-        display: "BGE small",
-        approxBytes: 35 * 1024 * 1024,
-        installed: false,
-        ready: false,
-        installing: false,
-        available: true,
-      };
+      return [
+        {
+          id: "bge",
+          kind: "text",
+          display: "BGE small",
+          approxBytes: 35 * 1024 * 1024,
+          installed: false,
+          ready: false,
+          installing: false,
+          available: true,
+        },
+        {
+          id: "clip",
+          kind: "image",
+          display: "CLIP",
+          approxBytes: 600 * 1024 * 1024,
+          installed: true,
+          ready: true,
+          installing: false,
+          available: true,
+        },
+      ];
     case "models_install":
       return null;
     case "file_open":
@@ -126,6 +139,7 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (c: string, a?: Record<string, unknown>) => invoke(c, a),
+  convertFileSrc: (p: string, proto: string) => `http://${proto}.localhost/${p}`,
 }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
@@ -151,10 +165,11 @@ describe("App", () => {
 
   it("offers the semantic model download with explicit consent", async () => {
     render(<App />);
-    const btn = await screen.findByRole("button", { name: /download model/i });
-    expect(screen.getByText(/35 MB/)).toBeTruthy();
+    const btn = await screen.findByRole("button", { name: /download.*35 MB/i });
+    expect(screen.getByText(/CLIP/)).toBeTruthy();
+    expect(screen.getByText(/^ready$/i)).toBeTruthy();
     fireEvent.click(btn);
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("models_install", undefined));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("models_install", { kind: "text" }));
   });
 
   it("searches as you type, shows chips and preview, opens on Enter", async () => {

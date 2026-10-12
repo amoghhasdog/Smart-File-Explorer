@@ -1,28 +1,34 @@
-//! Stage 3 — embed: chunk the extracted text, embed each chunk, store the
-//! vectors in `chunks` and the ANN index.
+//! Stage 3 — embed. Text files: chunk the extracted text and embed each
+//! chunk with the text model. Images: embed the thumbnail with the image
+//! model. Vectors go to `chunks` and the matching ANN index.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use sfe_core::{FileId, IndexState, Job};
 use sfe_db::{Result, chunks, files, fts, jobs, rusqlite::Connection};
-use sfe_embed::TextEmbedder;
+use sfe_embed::{ImageEmbedder, TextEmbedder};
 use sfe_vector::VectorIndex;
 
 use crate::chunk::chunk_text;
 
+pub(crate) const TEXT: &str = "text";
+pub(crate) const IMAGE: &str = "image";
+
 #[derive(Debug)]
 pub(crate) enum Outcome {
     Ok {
-        texts: Vec<String>,
+        modality: &'static str,
+        texts: Vec<Option<String>>,
         vectors: Vec<Vec<f32>>,
     },
-    /// Nothing to embed (no text) — still counts as embedded.
+    /// Nothing to embed — still counts as embedded.
     Empty,
     Failed(String),
 }
 
-/// Read the file's text and embed it. Runs outside the write lock.
-pub(crate) fn run(conn: &Connection, file: FileId, embedder: &dyn TextEmbedder) -> Outcome {
+/// Text path. Runs outside the write lock.
+pub(crate) fn run_text(conn: &Connection, file: FileId, embedder: &dyn TextEmbedder) -> Outcome {
     let text = match fts::get_text(conn, file) {
         Ok(Some(t)) if !t.trim().is_empty() => t,
         Ok(_) => return Outcome::Empty,
@@ -34,12 +40,33 @@ pub(crate) fn run(conn: &Connection, file: FileId, embedder: &dyn TextEmbedder) 
     }
     let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
     match embedder.embed(&refs) {
-        Ok(vectors) if vectors.len() == texts.len() => Outcome::Ok { texts, vectors },
+        Ok(vectors) if vectors.len() == texts.len() => Outcome::Ok {
+            modality: TEXT,
+            texts: texts.into_iter().map(Some).collect(),
+            vectors,
+        },
         Ok(v) => Outcome::Failed(format!(
             "embedder returned {} vectors for {} chunks",
             v.len(),
             texts.len()
         )),
+        Err(e) => Outcome::Failed(e.to_string()),
+    }
+}
+
+/// Image path: one vector per file from its thumbnail (or the original).
+pub(crate) fn run_image(path: &str, thumb: Option<&Path>, embedder: &dyn ImageEmbedder) -> Outcome {
+    let img = match crate::thumbs::load_for_embedding(thumb, Path::new(path)) {
+        Ok(i) => i,
+        Err(e) => return Outcome::Failed(format!("decode: {e}")),
+    };
+    match embedder.embed_images(vec![img]) {
+        Ok(mut v) if v.len() == 1 => Outcome::Ok {
+            modality: IMAGE,
+            texts: vec![None],
+            vectors: vec![v.remove(0)],
+        },
+        Ok(_) => Outcome::Failed("image embedder returned no vector".into()),
         Err(e) => Outcome::Failed(e.to_string()),
     }
 }
@@ -52,15 +79,19 @@ pub(crate) fn apply(
     index: &Arc<dyn VectorIndex>,
 ) -> Result<()> {
     match out {
-        Outcome::Ok { texts, vectors } => {
+        Outcome::Ok {
+            modality,
+            texts,
+            vectors,
+        } => {
             let new: Vec<chunks::NewChunk<'_>> = texts
                 .iter()
                 .zip(&vectors)
                 .enumerate()
                 .map(|(i, (t, v))| chunks::NewChunk {
                     ord: i as u32,
-                    modality: "text",
-                    text: Some(t.as_str()),
+                    modality,
+                    text: t.as_deref(),
                     model,
                     vec: v.as_slice(),
                 })

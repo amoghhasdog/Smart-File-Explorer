@@ -122,6 +122,26 @@ pub fn fail(conn: &Connection, job_id: i64) -> Result<bool> {
     Ok(true)
 }
 
+/// Push a leased job back by `secs` (e.g. its model is not loaded yet).
+pub fn defer(conn: &Connection, job_id: i64, secs: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE jobs SET leased_until = 0, not_before = ?2 WHERE id = ?1",
+        params![job_id, now() + secs],
+    )?;
+    Ok(())
+}
+
+/// Pending embed jobs split by whether the file is an image.
+pub fn count_embed_by_kind(conn: &Connection) -> Result<(u64, u64)> {
+    let (img, other): (i64, i64) = conn.query_row(
+        "SELECT coalesce(sum(f.category = 'image'), 0), coalesce(sum(f.category <> 'image'), 0)
+         FROM jobs j JOIN files f ON f.id = j.file_id WHERE j.stage = 3",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok((img.max(0) as u64, other.max(0) as u64))
+}
+
 /// Clear all leases (startup after a crash, or pause → resume).
 pub fn release_all(conn: &Connection) -> Result<usize> {
     Ok(conn.execute(
@@ -142,8 +162,9 @@ pub fn enqueue_missing_embed(conn: &Connection) -> Result<usize> {
     let n = conn.execute(
         "INSERT OR IGNORE INTO jobs (file_id, stage, priority, attempts, not_before, created_at)
          SELECT f.id, 3, -1, 0, 0, ?1 FROM files f
-         WHERE f.deleted = 0 AND f.kind = 'file' AND f.index_state = 2
-           AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file_id = f.id)",
+         WHERE f.deleted = 0 AND f.kind = 'file' AND f.index_state IN (2, 3)
+           AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.file_id = f.id)
+           AND (f.category = 'image' OR EXISTS (SELECT 1 FROM fts WHERE fts.rowid = f.id AND fts.text <> ''))",
         [now()],
     )?;
     Ok(n)

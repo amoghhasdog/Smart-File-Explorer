@@ -4,6 +4,7 @@ import { ipc, isIpcError, type Chip, type SearchHit } from "../../lib/ipc";
 import { formatBytes, formatDate, formatDuration, splitSnippet } from "../../lib/format";
 import { QueryChips } from "./QueryChips";
 import { PreviewPane } from "./PreviewPane";
+import { Thumb } from "./Thumb";
 
 const DEBOUNCE_MS = 120;
 const PAGE = 100;
@@ -156,9 +157,13 @@ export function SearchView() {
                   onClick={() => setSelected(row.index)}
                   onDoubleClick={() => ipc.fileOpen(h.id)}
                 >
-                  <span className={`cat cat-${h.category}`} aria-hidden>
-                    {h.ext || h.category}
-                  </span>
+                  {h.category === "image" ? (
+                    <Thumb id={h.id} alt="" className="result-thumb" />
+                  ) : (
+                    <span className={`cat cat-${h.category}`} aria-hidden>
+                      {h.ext || h.category}
+                    </span>
+                  )}
                   <div className="result-main">
                     <div className="result-name">{h.name}</div>
                     <div className="result-path muted" title={h.path}>

@@ -20,7 +20,8 @@ use sfe_search::Searcher;
 use tokio::sync::watch;
 
 pub use search::{FileDetails, SearchHit};
-pub use sfe_embed::{ModelProgress, ModelStatus, TextEmbedder};
+pub use sfe_embed::models::ModelKind;
+pub use sfe_embed::{ImageEmbedder, ModelProgress, ModelStatus, TextEmbedder};
 pub use sfe_query::Query;
 pub use sfe_search::SearchResponse;
 
@@ -81,8 +82,11 @@ impl Engine {
         Self::open_with(data_dir, IndexerConfig::default())
     }
 
-    pub fn open_with(data_dir: impl AsRef<Path>, cfg: IndexerConfig) -> Result<Self> {
+    pub fn open_with(data_dir: impl AsRef<Path>, mut cfg: IndexerConfig) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
+        if cfg.thumbs_dir.is_none() {
+            cfg.thumbs_dir = Some(data_dir.join("thumbs"));
+        }
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| EngineError::DataDir(data_dir.clone(), e))?;
         let db = Arc::new(Database::open(data_dir.join("index.db"))?);
@@ -240,6 +244,11 @@ impl Engine {
 
     pub fn file_details(&self, id: FileId) -> Result<Option<FileDetails>> {
         search::details(&self.inner.db, id)
+    }
+
+    /// On-disk thumbnail for a file, if one was generated.
+    pub fn thumbnail_path(&self, id: FileId) -> Option<PathBuf> {
+        self.inner.indexer.thumbnail_path(id).filter(|p| p.exists())
     }
 
     // ----- internals -------------------------------------------------------
@@ -444,6 +453,40 @@ mod tests {
             .unwrap();
         let r = engine.search("athena launch planning", 10, 0).unwrap();
         assert_eq!(r.hits[0].name, "planning.md");
-        assert!(!engine.models_status().installed);
+        assert!(!engine.models_status()[0].installed);
+    }
+
+    #[test]
+    fn image_search_by_colour_word_uses_thumbnails_and_image_index() {
+        let data = tempfile::tempdir().unwrap();
+        let tree = tempfile::tempdir().unwrap();
+        for (name, rgb) in [("sky.png", [10u8, 20, 240]), ("fire.png", [240, 30, 10])] {
+            image::RgbImage::from_pixel(640, 480, image::Rgb(rgb))
+                .save(tree.path().join(name))
+                .unwrap();
+        }
+        std::fs::write(tree.path().join("notes.txt"), "blue skies ahead").unwrap();
+
+        let engine = Engine::open(data.path()).unwrap();
+        engine
+            .activate_image_embedder(Arc::new(sfe_embed::FakeImageEmbedder))
+            .unwrap();
+        engine.add_root(tree.path()).unwrap();
+        assert!(engine.wait_idle(Duration::from_secs(20)));
+        let st = engine.status();
+        assert_eq!(st.embedded, 2, "{st:?}");
+        assert_eq!(
+            st.waiting_for_model, 1,
+            "text file waits for the text model; {st:?}"
+        );
+
+        let r = engine.search("photos with a lot of blue", 10, 0).unwrap();
+        assert_eq!(r.hits.len(), 1, "{:?}", r.hits);
+        assert_eq!(r.hits[0].name, "sky.png");
+        let thumb = engine.thumbnail_path(r.hits[0].id).expect("thumbnail");
+        assert_eq!(image::open(thumb).unwrap().width(), 512);
+
+        let r = engine.search("red", 10, 0).unwrap();
+        assert_eq!(r.hits.first().map(|h| h.name.as_str()), Some("fire.png"));
     }
 }

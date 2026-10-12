@@ -22,7 +22,7 @@ use sfe_db::Database;
 use sfe_query::Query;
 
 pub use hydrate::Hit;
-pub use semantic::SemanticText;
+pub use semantic::{Semantic, SemanticText};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {

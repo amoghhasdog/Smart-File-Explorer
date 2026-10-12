@@ -2,9 +2,9 @@
 //! metadata patch in `file_meta`, hash the content.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use sfe_core::{FileMeta, FileRecord, IndexState, Job, Stage};
+use sfe_core::{Category, FileMeta, FileRecord, IndexState, Job, Stage};
 use sfe_db::{Result, files, fts, jobs, meta, rusqlite::Connection};
 use sfe_extract::{ExtractError, FileInput, FileProbe, Limits, Registry};
 
@@ -29,7 +29,12 @@ pub(crate) enum Outcome {
     },
 }
 
-pub(crate) fn run(rec: &FileRecord, registry: &Registry, limits: &Limits) -> Outcome {
+pub(crate) fn run(
+    rec: &FileRecord,
+    registry: &Registry,
+    limits: &Limits,
+    thumbs_dir: Option<&Path>,
+) -> Outcome {
     let path = Path::new(&rec.path);
     let probe = FileProbe {
         ext: &rec.ext,
@@ -51,14 +56,24 @@ pub(crate) fn run(rec: &FileRecord, registry: &Registry, limits: &Limits) -> Out
     };
     let input = FileInput::new(file, rec.size, path.to_path_buf());
     match sfe_extract::run_guarded(extractor, Box::new(input), limits) {
-        Ok(ex) => Outcome::Ok {
-            text: ex.text,
-            meta: ex.meta,
-            truncated: ex.truncated,
-            extractor: extractor.id(),
-            version: extractor.version(),
-            hash: hash_file(path, limits.max_bytes),
-        },
+        Ok(ex) => {
+            if rec.category == Category::Image
+                && let Some(d) = thumbs_dir
+            {
+                let dst: PathBuf = crate::thumbs::path(d, rec.id);
+                if let Err(e) = crate::thumbs::generate(path, &dst, crate::thumbs::MAX_SIDE) {
+                    tracing::debug!(path = %rec.path, error = %e, "thumbnail failed");
+                }
+            }
+            Outcome::Ok {
+                text: ex.text,
+                meta: ex.meta,
+                truncated: ex.truncated,
+                extractor: extractor.id(),
+                version: extractor.version(),
+                hash: hash_file(path, limits.max_bytes),
+            }
+        }
         Err(e) => {
             let permanent = !matches!(e, ExtractError::Io(_));
             tracing::debug!(path = %rec.path, extractor = extractor.id(), error = %e, "extraction failed");
@@ -115,7 +130,7 @@ pub(crate) fn apply(c: &Connection, job: &Job, out: Outcome) -> Result<()> {
                     files::set_content_hash(c, rec.id, &h)?;
                 }
                 files::set_state(c, rec.id, IndexState::Text, None)?;
-                if !text.is_empty() {
+                if !text.is_empty() || rec.category == Category::Image {
                     jobs::enqueue(c, rec.id, Stage::Embed, job.priority)?;
                 }
             }

@@ -19,6 +19,7 @@ mod embed;
 mod metadata;
 mod status;
 mod text;
+pub mod thumbs;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -26,9 +27,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use sfe_core::{FileId, FileKind, Root, RootId, Stage};
+use sfe_core::{Category, FileId, FileKind, Root, RootId, Stage};
 use sfe_db::{Database, files, fts, jobs, roots};
-use sfe_embed::TextEmbedder;
+use sfe_embed::{ImageEmbedder, TextEmbedder};
 use sfe_extract::{Limits, Registry};
 use sfe_fs::{IgnoreRules, WalkStats};
 use sfe_vector::VectorIndex;
@@ -64,6 +65,8 @@ pub struct IndexerConfig {
     pub ignore: IgnoreRules,
     /// Caps for content extraction.
     pub limits: Limits,
+    /// Where image thumbnails are written; `None` disables them.
+    pub thumbs_dir: Option<PathBuf>,
 }
 
 impl Default for IndexerConfig {
@@ -79,6 +82,7 @@ impl Default for IndexerConfig {
             head_bytes: 8192,
             ignore: IgnoreRules::default(),
             limits: Limits::default(),
+            thumbs_dir: None,
         }
     }
 }
@@ -103,6 +107,8 @@ pub struct Indexer {
     /// Set once a text model is installed; `None` leaves embed jobs queued.
     embedder: RwLock<Option<Arc<dyn TextEmbedder>>>,
     vectors: RwLock<Option<Arc<dyn VectorIndex>>>,
+    image_embedder: RwLock<Option<Arc<dyn ImageEmbedder>>>,
+    image_vectors: RwLock<Option<Arc<dyn VectorIndex>>>,
     status: status::StatusHub,
     paused: AtomicBool,
     cancel: CancellationToken,
@@ -128,6 +134,8 @@ impl Indexer {
             registry: Registry::with_defaults(),
             embedder: RwLock::new(None),
             vectors: RwLock::new(None),
+            image_embedder: RwLock::new(None),
+            image_vectors: RwLock::new(None),
             status,
             paused: AtomicBool::new(false),
             cancel: CancellationToken::new(),
@@ -159,12 +167,39 @@ impl Indexer {
         self.embedder.read().unwrap().is_some()
     }
 
+    /// Enable image embedding (CLIP-style model + its own index).
+    pub fn set_image_embedder(
+        &self,
+        embedder: Arc<dyn ImageEmbedder>,
+        vectors: Arc<dyn VectorIndex>,
+    ) {
+        *self.image_embedder.write().unwrap() = Some(embedder);
+        *self.image_vectors.write().unwrap() = Some(vectors);
+        match self.db.transaction(jobs::enqueue_missing_embed) {
+            Ok(n) if n > 0 => tracing::info!(n, "queued embed jobs for already-indexed files"),
+            Ok(_) => {}
+            Err(e) => tracing::error!(error = %e, "backfilling embed jobs"),
+        }
+        self.refresh_status();
+        self.wake.notify_waiters();
+    }
+
+    pub fn has_image_embedder(&self) -> bool {
+        self.image_embedder.read().unwrap().is_some()
+    }
+
+    pub fn thumbnail_path(&self, id: FileId) -> Option<PathBuf> {
+        self.cfg.thumbs_dir.as_ref().map(|d| thumbs::path(d, id))
+    }
+
     /// Persist the vector index (call on shutdown and periodically).
     pub fn save_vectors(&self) {
-        if let Some(v) = self.vectors.read().unwrap().as_ref()
-            && let Err(e) = v.save()
-        {
-            tracing::error!(error = %e, "saving vector index");
+        for slot in [&self.vectors, &self.image_vectors] {
+            if let Some(v) = slot.read().unwrap().as_ref()
+                && let Err(e) = v.save()
+            {
+                tracing::error!(error = %e, "saving vector index");
+            }
         }
     }
 
@@ -183,6 +218,7 @@ impl Indexer {
             self.is_paused(),
             &self.scanning_paths(),
             self.has_embedder(),
+            self.has_image_embedder(),
         );
     }
 
@@ -442,8 +478,10 @@ impl Indexer {
     fn work_batch(&self) -> Result<usize> {
         let embedder = self.embedder.read().unwrap().clone();
         let vectors = self.vectors.read().unwrap().clone();
+        let image_embedder = self.image_embedder.read().unwrap().clone();
+        let image_vectors = self.image_vectors.read().unwrap().clone();
         let leased = self.db.transaction(|c| {
-            if embedder.is_some() {
+            if embedder.is_some() || image_embedder.is_some() {
                 jobs::lease(c, None, self.cfg.job_batch, self.cfg.lease_secs)
             } else {
                 // No model yet: never lease embed jobs, they wait.
@@ -478,6 +516,7 @@ impl Indexer {
         let mut meta_results = Vec::new();
         let mut text_results = Vec::new();
         let mut embed_results = Vec::new();
+        let mut deferred = Vec::new();
         let reader = self.db.reader()?;
         // IO outside the write lock.
         for job in &leased {
@@ -492,18 +531,36 @@ impl Indexer {
                 }
                 Stage::Text => {
                     let out = match rec {
-                        Some(rec) => text::run(rec, &self.registry, &self.cfg.limits),
+                        Some(rec) => text::run(
+                            rec,
+                            &self.registry,
+                            &self.cfg.limits,
+                            self.cfg.thumbs_dir.as_deref(),
+                        ),
                         None => text::Outcome::Gone,
                     };
                     text_results.push((job, out));
                 }
                 Stage::Embed => {
-                    let out = match (&embedder, rec) {
-                        (Some(e), Some(_)) => embed::run(&reader, job.file_id, e.as_ref()),
-                        (Some(_), None) => embed::Outcome::Empty,
-                        (None, _) => continue,
+                    let is_image = rec.is_some_and(|r| r.category == Category::Image);
+                    let out = match (is_image, rec, &embedder, &image_embedder) {
+                        (_, None, _, _) => Some((embed::Outcome::Empty, false)),
+                        (true, Some(r), _, Some(ie)) => {
+                            let thumb = self.thumbnail_path(r.id);
+                            Some((
+                                embed::run_image(&r.path, thumb.as_deref(), ie.as_ref()),
+                                true,
+                            ))
+                        }
+                        (false, Some(_), Some(te), _) => {
+                            Some((embed::run_text(&reader, job.file_id, te.as_ref()), false))
+                        }
+                        _ => None, // the model this file needs is not loaded
                     };
-                    embed_results.push((job, out));
+                    match out {
+                        Some((out, image)) => embed_results.push((job, out, image)),
+                        None => deferred.push(job.id),
+                    }
                 }
             }
         }
@@ -514,10 +571,17 @@ impl Indexer {
             for (job, out) in text_results {
                 text::apply(c, job, out)?;
             }
-            if let (Some(e), Some(v)) = (&embedder, &vectors) {
-                for (job, out) in embed_results {
+            for (job, out, image) in embed_results {
+                if image {
+                    if let (Some(e), Some(v)) = (&image_embedder, &image_vectors) {
+                        embed::apply(c, job, out, e.model_id(), v)?;
+                    }
+                } else if let (Some(e), Some(v)) = (&embedder, &vectors) {
                     embed::apply(c, job, out, e.model_id(), v)?;
                 }
+            }
+            for id in deferred {
+                jobs::defer(c, id, 60)?;
             }
             Ok(())
         })?;

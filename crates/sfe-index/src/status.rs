@@ -45,7 +45,7 @@ impl StatusHub {
             tx: watch::channel(IndexStatus::default()).0,
             last_error: Mutex::new(None),
         };
-        hub.refresh(db, false, &[], false);
+        hub.refresh(db, false, &[], false, false);
         hub
     }
 
@@ -61,21 +61,37 @@ impl StatusHub {
         *self.last_error.lock().unwrap() = Some(e);
     }
 
-    pub fn refresh(&self, db: &Database, paused: bool, scanning: &[RootId], model_ready: bool) {
+    pub fn refresh(
+        &self,
+        db: &Database,
+        paused: bool,
+        scanning: &[RootId],
+        text_ready: bool,
+        image_ready: bool,
+    ) {
         let counted = {
             let conn = db.writer();
             files::count_by_state(&conn).and_then(|s| {
-                jobs::count_by_stage(&conn).map(|by_stage| {
+                jobs::count_by_stage(&conn).and_then(|by_stage| {
+                    let (img, other) = jobs::count_embed_by_kind(&conn)?;
                     let mut pending = 0;
                     let mut waiting = 0;
                     for (stage, n) in by_stage {
-                        if stage == Stage::Embed && !model_ready {
-                            waiting += n;
-                        } else {
+                        if stage != Stage::Embed {
                             pending += n;
                         }
                     }
-                    (s, pending, waiting)
+                    if image_ready {
+                        pending += img
+                    } else {
+                        waiting += img
+                    }
+                    if text_ready {
+                        pending += other
+                    } else {
+                        waiting += other
+                    }
+                    Ok((s, pending, waiting))
                 })
             })
         };
