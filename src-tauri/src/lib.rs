@@ -40,6 +40,8 @@ pub fn run() {
             commands::index_resume,
             commands::index_rescan,
             commands::search,
+            commands::search_explain,
+            commands::file_details,
             commands::file_open,
             commands::file_reveal,
         ])

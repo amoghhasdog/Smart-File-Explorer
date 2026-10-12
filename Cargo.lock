@@ -3827,6 +3827,8 @@ dependencies = [
  "sfe-db",
  "sfe-fs",
  "sfe-index",
+ "sfe-query",
+ "sfe-search",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3901,13 +3903,13 @@ dependencies = [
 name = "sfe-search"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "serde",
  "sfe-core",
  "sfe-db",
- "sfe-embed",
  "sfe-query",
- "sfe-vector",
+ "tempfile",
  "thiserror 2.0.21",
- "tokio",
  "tracing",
 ]
 

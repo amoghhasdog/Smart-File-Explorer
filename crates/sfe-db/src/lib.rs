@@ -12,6 +12,7 @@
 mod error;
 pub mod files;
 pub mod fts;
+mod functions;
 pub mod jobs;
 pub mod meta;
 mod migrations;
@@ -106,6 +107,7 @@ impl Database {
 }
 
 fn configure(conn: &Connection) -> Result<()> {
+    functions::register(conn)?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;

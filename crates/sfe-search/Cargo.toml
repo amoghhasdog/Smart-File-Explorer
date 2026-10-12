@@ -9,11 +9,13 @@ license.workspace = true
 sfe-core.workspace = true
 sfe-db.workspace = true
 sfe-query.workspace = true
-sfe-embed.workspace = true
-sfe-vector.workspace = true
-tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+chrono.workspace = true
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { IndexStatus, Root, SearchHit } from "./lib/ipc";
+import type { FileDetails, IndexStatus, Root, SearchHit, SearchResponse } from "./lib/ipc";
 
 const roots: Root[] = [];
 const status: IndexStatus = {
@@ -25,7 +25,61 @@ const hit: SearchHit = {
   mtime: 1_700_000_000,
   mime: "text/markdown",
   snippet: "[Ferrari] notes.md",
+  score: 1,
+  width: null,
+  height: null,
+  durationMs: null,
 };
+const details: FileDetails = {
+  record: {
+    id: 7,
+    root_id: 1,
+    path: hit.path,
+    parent_path: "C:\\docs",
+    name: hit.name,
+    ext: "md",
+    kind: "file",
+    category: "document",
+    size: 2048,
+    mtime: 1_700_000_000,
+    ctime: null,
+    mime: "text/markdown",
+    index_state: "text",
+    index_error: null,
+  },
+  meta: {
+    width: null,
+    height: null,
+    duration_ms: null,
+    page_count: null,
+    word_count: 12,
+    camera_make: null,
+    taken_at: null,
+    gps_lat: null,
+    gps_lon: null,
+    dominant_colors: null,
+    title: null,
+    author: null,
+  },
+  textExcerpt: "The Ferrari F40 is red.",
+  textChars: 23,
+  extractor: "plain",
+};
+
+function response(query: string, hits: SearchHit[]): SearchResponse {
+  return {
+    query: {
+      raw: query,
+      terms: [query],
+      phrases: [],
+      semantic: query,
+      chips: [{ kind: "terms", label: query }],
+    },
+    hits,
+    tookMs: 3,
+    hasMore: false,
+  };
+}
 
 const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   switch (cmd) {
@@ -41,8 +95,14 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
       return null;
     case "index_status":
       return status;
-    case "search":
-      return (args?.query as string).startsWith("ferr") ? [hit] : [];
+    case "search": {
+      const q = args?.query as string;
+      return response(q, q.startsWith("ferr") ? [hit] : []);
+    }
+    case "search_explain":
+      return response(args?.query as string, []).query;
+    case "file_details":
+      return details;
     case "file_open":
     case "file_reveal":
       return null;
@@ -51,7 +111,9 @@ const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   }
 });
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: (c: string, a?: Record<string, unknown>) => invoke(c, a) }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (c: string, a?: Record<string, unknown>) => invoke(c, a),
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
 import App from "./App";
@@ -74,13 +136,18 @@ describe("App", () => {
     await waitFor(() => expect(screen.queryByText("C:\\docs")).toBeNull());
   });
 
-  it("searches as you type and opens the selected hit on Enter", async () => {
+  it("searches as you type, shows chips and preview, opens on Enter", async () => {
     render(<App />);
     const input = screen.getByRole("searchbox", { name: /search query/i });
     fireEvent.change(input, { target: { value: "ferr" } });
-    expect(await screen.findByText("Ferrari notes.md")).toBeTruthy();
-    expect(screen.getByText("2.0 KB")).toBeTruthy();
+    expect((await screen.findAllByText("Ferrari notes.md")).length).toBeGreaterThan(0);
+    expect(screen.getByText("2.0 KB", { selector: ".result-meta div" })).toBeTruthy();
     expect(screen.getByText("Ferrari", { selector: "mark" })).toBeTruthy();
+    expect(screen.getByText("ferr", { selector: ".chip" })).toBeTruthy();
+
+    // preview pane loads the selected hit's details
+    expect(await screen.findByText("The Ferrari F40 is red.")).toBeTruthy();
+    expect(screen.getByText("12")).toBeTruthy();
 
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("file_open", { id: 7 }));

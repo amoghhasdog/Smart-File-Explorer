@@ -15,9 +15,12 @@ use sfe_db::{Database, files, fts, roots};
 use sfe_fs::{FsChange, Watcher};
 pub use sfe_index::IndexStatus;
 use sfe_index::{Indexer, IndexerConfig};
+use sfe_search::Searcher;
 use tokio::sync::watch;
 
-pub use search::SearchHit;
+pub use search::{FileDetails, SearchHit};
+pub use sfe_query::Query;
+pub use sfe_search::SearchResponse;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -29,6 +32,8 @@ pub enum EngineError {
     Fs(#[from] sfe_fs::FsError),
     #[error(transparent)]
     Index(#[from] sfe_index::IndexError),
+    #[error(transparent)]
+    Search(#[from] sfe_search::SearchError),
     #[error("could not start background runtime: {0}")]
     Runtime(std::io::Error),
     #[error("{0} is already covered by indexed folder {1}")]
@@ -48,6 +53,7 @@ struct Inner {
     data_dir: PathBuf,
     db: Arc<Database>,
     indexer: Arc<Indexer>,
+    searcher: Searcher,
     rt: tokio::runtime::Runtime,
     watcher: Mutex<Watcher>,
 }
@@ -84,6 +90,7 @@ impl Engine {
             .build()
             .map_err(EngineError::Runtime)?;
         let indexer = Indexer::new(Arc::clone(&db), cfg);
+        let searcher = Searcher::new(Arc::clone(&db));
         let (watcher, changes) = Watcher::new(Duration::from_secs(2))?;
 
         let engine = Self {
@@ -91,6 +98,7 @@ impl Engine {
                 data_dir,
                 db,
                 indexer,
+                searcher,
                 rt,
                 watcher: Mutex::new(watcher),
             }),
@@ -210,10 +218,18 @@ impl Engine {
         Ok(files::get(&self.inner.db.reader()?, id)?)
     }
 
-    /// Keyword search over names and extracted text. Phase 4 replaces this
-    /// with the full natural-language pipeline.
-    pub fn search(&self, query: &str, limit: usize, offset: usize) -> Result<Vec<SearchHit>> {
-        search::keyword(&self.inner.db, query, limit, offset)
+    /// Natural-language search: parse, run strategies, fuse, page.
+    pub fn search(&self, input: &str, limit: usize, offset: usize) -> Result<SearchResponse> {
+        search::search(&self.inner.searcher, input, limit, offset)
+    }
+
+    /// How a query would be interpreted (for live chips while typing).
+    pub fn explain(&self, input: &str) -> Query {
+        search::explain(input)
+    }
+
+    pub fn file_details(&self, id: FileId) -> Result<Option<FileDetails>> {
+        search::details(&self.inner.db, id)
     }
 
     // ----- internals -------------------------------------------------------
@@ -334,7 +350,7 @@ mod tests {
         assert_eq!(st.metadata, 1, "binary stops at metadata; {st:?}");
         assert_eq!(st.text, 1, "markdown reaches the text stage; {st:?}");
 
-        let hits = engine.search("athena road", 10, 0).unwrap();
+        let hits = engine.search("athena road", 10, 0).unwrap().hits;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name, "Athena roadmap.md");
         assert_eq!(hits[0].category, sfe_core::Category::Document);
@@ -348,7 +364,7 @@ mod tests {
 
         engine.remove_root(root.id).unwrap();
         assert!(engine.list_roots().unwrap().is_empty());
-        assert!(engine.search("athena", 10, 0).unwrap().is_empty());
+        assert!(engine.search("athena", 10, 0).unwrap().hits.is_empty());
         assert!(matches!(
             engine.remove_root(root.id),
             Err(EngineError::NoSuchRoot(_))
@@ -367,7 +383,7 @@ mod tests {
         std::fs::write(tree.path().join("Ferrari spec.txt"), "v12").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            if !engine.search("ferrari", 10, 0).unwrap().is_empty() {
+            if !engine.search("ferrari", 10, 0).unwrap().hits.is_empty() {
                 break;
             }
             assert!(

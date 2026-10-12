@@ -32,7 +32,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
-rusqlite = { version = "0.37", features = ["bundled", "blob"] }
+rusqlite = { version = "0.37", features = ["bundled", "blob", "functions"] }
 tempfile = "3"
 
 [workspace.lints.rust]

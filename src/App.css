@@ -276,3 +276,138 @@ mark {
     opacity: 0.55;
   }
 }
+
+/* ----- Phase 4: chips, virtualised results, preview ----- */
+.search-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+  margin-top: 8px;
+}
+.took {
+  margin-left: auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.chip-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+}
+.chip-terms {
+  background: var(--border);
+  color: var(--muted);
+}
+.chip-phrase {
+  background: var(--mark);
+  color: var(--fg);
+}
+
+.search-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+  margin-top: 8px;
+}
+.results-scroll {
+  overflow: auto;
+  min-height: 0;
+}
+.results {
+  margin: 0;
+}
+.load-more {
+  margin: 12px auto;
+  display: block;
+}
+
+.preview {
+  border-left: 1px solid var(--border);
+  padding: 0 0 0 16px;
+  overflow: auto;
+  min-height: 0;
+  font-size: 13px;
+}
+.preview-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.preview-path {
+  font-size: 12px;
+  word-break: break-all;
+  margin-top: 2px;
+}
+.preview-actions {
+  display: flex;
+  gap: 6px;
+  margin: 12px 0;
+}
+.swatches {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.meta {
+  margin: 0;
+}
+.meta-row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 8px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.meta-row dt {
+  color: var(--muted);
+}
+.meta-row dd {
+  margin: 0;
+  word-break: break-word;
+  user-select: text;
+}
+.excerpt h4 {
+  margin: 16px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.excerpt pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  max-height: 40vh;
+  overflow: auto;
+  user-select: text;
+}

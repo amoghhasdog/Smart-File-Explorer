@@ -10,13 +10,35 @@ export function formatBytes(n: number): string {
   return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
 }
 
-export function formatDate(unixSeconds: number): string {
+export function formatDate(unixSeconds: number | null | undefined): string {
   if (!unixSeconds) return "";
   return new Date(unixSeconds * 1000).toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",
     day: "numeric",
   });
+}
+
+export function formatDateTime(unixSeconds: number | null | undefined): string {
+  if (!unixSeconds) return "";
+  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms == null) return "";
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
+    : `${m}:${String(sec).padStart(2, "0")}`;
 }
 
 export function formatCount(n: number): string {
@@ -35,4 +57,15 @@ export function splitSnippet(s: string): { text: string; hit: boolean }[] {
   }
   if (last < s.length) out.push({ text: s.slice(last), hit: false });
   return out;
+}
+
+/** Parse the `[[r,g,b,share],...]` JSON stored for dominant colours. */
+export function parseColors(json: string | null | undefined): { rgb: string; share: number }[] {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json) as number[][];
+    return arr.map(([r, g, b, share]) => ({ rgb: `rgb(${r},${g},${b})`, share }));
+  } catch {
+    return [];
+  }
 }

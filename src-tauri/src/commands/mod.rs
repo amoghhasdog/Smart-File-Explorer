@@ -5,7 +5,7 @@
 
 use serde::Serialize;
 use sfe_core::{FileId, Root, RootId};
-use sfe_engine::{Engine, EngineError, IndexStatus, SearchHit};
+use sfe_engine::{Engine, EngineError, FileDetails, IndexStatus, Query, SearchResponse};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -26,6 +26,7 @@ impl From<EngineError> for IpcError {
             EngineError::Fs(f) if f.is_not_found() => "not_found",
             EngineError::Fs(_) => "filesystem",
             EngineError::Index(_) => "index",
+            EngineError::Search(_) => "search",
             EngineError::Runtime(_) => "runtime",
             EngineError::NestedRoot(..) => "nested_root",
             EngineError::NoSuchRoot(_) => "no_such_root",
@@ -116,9 +117,34 @@ pub async fn search(
     query: String,
     limit: Option<usize>,
     offset: Option<usize>,
-) -> IpcResult<Vec<SearchHit>> {
+) -> IpcResult<SearchResponse> {
     let limit = limit.unwrap_or(50).clamp(1, 200);
-    Ok(engine.search(&query, limit, offset.unwrap_or(0))?)
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || engine.search(&query, limit, offset.unwrap_or(0)))
+        .await
+        .map_err(|e| IpcError {
+            code: "runtime",
+            message: e.to_string(),
+        })?
+        .map_err(IpcError::from)
+}
+
+/// Parse only — drives the interpretation chips while the user types.
+#[tauri::command]
+pub async fn search_explain(engine: State<'_, Engine>, query: String) -> IpcResult<Query> {
+    Ok(engine.explain(&query))
+}
+
+#[tauri::command]
+pub async fn file_details(engine: State<'_, Engine>, id: FileId) -> IpcResult<Option<FileDetails>> {
+    let engine = engine.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || engine.file_details(id))
+        .await
+        .map_err(|e| IpcError {
+            code: "runtime",
+            message: e.to_string(),
+        })?
+        .map_err(IpcError::from)
 }
 
 /// Open a file with its default application. The path comes from the index,

@@ -30,6 +30,33 @@ export interface IndexStatus {
   lastError: string | null;
 }
 
+export type ChipKind =
+  | "type"
+  | "ext"
+  | "size"
+  | "duration"
+  | "date"
+  | "color"
+  | "dimensions"
+  | "phrase"
+  | "about"
+  | "path"
+  | "terms";
+
+export interface Chip {
+  kind: ChipKind;
+  label: string;
+}
+
+/** Parsed query as returned by the backend; only the parts the UI uses. */
+export interface ParsedQuery {
+  raw: string;
+  terms: string[];
+  phrases: string[];
+  semantic: string | null;
+  chips: Chip[];
+}
+
 export interface SearchHit {
   id: FileId;
   path: string;
@@ -39,7 +66,58 @@ export interface SearchHit {
   size: number;
   mtime: number;
   mime: string | null;
-  snippet: string;
+  snippet: string | null;
+  score: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+}
+
+export interface SearchResponse {
+  query: ParsedQuery;
+  hits: SearchHit[];
+  tookMs: number;
+  hasMore: boolean;
+}
+
+export interface FileRecord {
+  id: FileId;
+  root_id: RootId;
+  path: string;
+  parent_path: string;
+  name: string;
+  ext: string;
+  kind: "file" | "dir";
+  category: Category;
+  size: number;
+  mtime: number;
+  ctime: number | null;
+  mime: string | null;
+  index_state: "discovered" | "metadata" | "text" | "embedded" | "failed";
+  index_error: string | null;
+}
+
+export interface FileMeta {
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+  page_count: number | null;
+  word_count: number | null;
+  camera_make: string | null;
+  taken_at: number | null;
+  gps_lat: number | null;
+  gps_lon: number | null;
+  dominant_colors: string | null;
+  title: string | null;
+  author: string | null;
+}
+
+export interface FileDetails {
+  record: FileRecord;
+  meta: FileMeta | null;
+  textExcerpt: string | null;
+  textChars: number | null;
+  extractor: string | null;
 }
 
 export interface IpcError {
@@ -65,8 +143,10 @@ export const ipc = {
   indexRescan: (id: RootId) => invoke<void>("index_rescan", { id }),
 
   search: (query: string, limit = 50, offset = 0) =>
-    invoke<SearchHit[]>("search", { query, limit, offset }),
+    invoke<SearchResponse>("search", { query, limit, offset }),
+  searchExplain: (query: string) => invoke<ParsedQuery>("search_explain", { query }),
 
+  fileDetails: (id: FileId) => invoke<FileDetails | null>("file_details", { id }),
   fileOpen: (id: FileId) => invoke<void>("file_open", { id }),
   fileReveal: (id: FileId) => invoke<void>("file_reveal", { id }),
 
