@@ -308,6 +308,19 @@ pub trait VectorIndex: Send + Sync { fn add(&self, id: u64, v: &[f32]); fn remov
 
 ---
 
+## 12b. Implementation notes (deviations discovered while building)
+
+- **usearch SIMD backend**: `usearch`'s default `numkong` feature does not link on MSVC (its symbols are
+  emitted as DLL imports). The crate is built with `default-features = false` — pure C++ HNSW, no SIMD
+  kernels. Revisit when upstream fixes the Windows build.
+- **Chunk ids are never recycled** (`chunks.id` is `AUTOINCREMENT`, migration v2) because they are the keys
+  of the on-disk vector index; SQLite would otherwise reuse a deleted rowid for a different chunk.
+- **Model download**: fastembed/hf-hub fetch the pinned model repo into `<data_dir>/models` on consent; a
+  marker file records a completed install and later loads are offline. We rely on hf-hub's
+  content-addressed blobs rather than a custom SHA-256 manifest (follow-up: add one when bundling).
+- **Embed jobs without a model** are parked (never leased) and reported as `waiting_for_model`, so the
+  index still reads "idle" for everything a user can act on.
+
 ## 13. Technical risks (ranked)
 
 1. **PDF extraction quality** in pure Rust — mitigated by adapter trait; fallback to `pdfium-render` (+DLL). OCR for scanned PDFs out of scope.
