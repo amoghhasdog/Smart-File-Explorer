@@ -56,6 +56,10 @@ impl Extractor for Media {
         container(probe).map(|(_, s)| s).unwrap_or(Support::No)
     }
 
+    fn reads_whole_file(&self) -> bool {
+        false
+    }
+
     fn extract(&self, input: &mut dyn ExtractInput, _limits: &Limits) -> Result<Extracted> {
         let mut head = [0u8; 16];
         input.seek(SeekFrom::Start(0))?;
@@ -71,7 +75,15 @@ impl Extractor for Media {
         };
         input.seek(SeekFrom::Start(0))?;
         let meta = match kind {
-            Container::Mp4 => mp4_meta(input)?,
+            // The `mp4` crate rejects some real-world files (odd sample
+            // entries); symphonia's isomp4 demuxer is a second opinion.
+            Container::Mp4 => match mp4_meta(input) {
+                Ok(m) => m,
+                Err(first) => {
+                    input.seek(SeekFrom::Start(0))?;
+                    audio_meta(input).map_err(|_| first)?
+                }
+            },
             Container::Matroska => mkv_meta(input)?,
             Container::Symphonia => audio_meta(input)?,
         };
@@ -121,7 +133,11 @@ fn mkv_meta(input: &mut dyn ExtractInput) -> Result<FileMeta> {
 fn audio_meta(input: &mut dyn ExtractInput) -> Result<FileMeta> {
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::probe::Hint;
-    let bytes = input.read_all()?;
+    // Containers are parsed from headers; cap what we pull into memory.
+    let cap = input.size().min(64 * 1024 * 1024);
+    input.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(cap as usize);
+    std::io::Read::take(ReadSeek(input), cap).read_to_end(&mut bytes)?;
     let mss = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes)), Default::default());
     let probed = symphonia::default::get_probe()
         .format(&Hint::new(), mss, &Default::default(), &Default::default())

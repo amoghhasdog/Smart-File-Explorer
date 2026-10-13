@@ -21,6 +21,7 @@ matroska = "0.30"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "wav", "ogg", "vorbis", "pcm", "aac", "isomp4"] }
 
 [dev-dependencies]
+infer = "0.19"
 tempfile.workspace = true
 
 [lints]

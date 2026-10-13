@@ -5185,6 +5185,7 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "image",
+ "infer 0.19.0",
  "kamadak-exif",
  "matroska",
  "mp4",

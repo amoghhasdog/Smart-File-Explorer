@@ -92,6 +92,11 @@ pub trait Extractor: Send + Sync {
     fn version(&self) -> u32;
     fn supports(&self, probe: &FileProbe<'_>) -> Support;
     fn extract(&self, input: &mut dyn ExtractInput, limits: &Limits) -> Result<Extracted>;
+    /// Whether the adapter reads the whole file (subject to `Limits::max_bytes`)
+    /// or only headers/containers (exempt, e.g. a 4 GB video's duration).
+    fn reads_whole_file(&self) -> bool {
+        true
+    }
 }
 
 /// Run `extractor` on `input` on a helper thread, converting panics into
@@ -102,7 +107,7 @@ pub fn run_guarded(
     mut input: Box<dyn ExtractInput>,
     limits: &Limits,
 ) -> Result<Extracted> {
-    if input.size() > limits.max_bytes {
+    if extractor.reads_whole_file() && input.size() > limits.max_bytes {
         return Err(ExtractError::TooLarge {
             size: input.size(),
             max: limits.max_bytes,

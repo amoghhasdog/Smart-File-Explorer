@@ -24,6 +24,10 @@ impl Extractor for Image {
         1
     }
 
+    fn reads_whole_file(&self) -> bool {
+        false // decoding is bounded separately by `max_decode_bytes`
+    }
+
     fn supports(&self, probe: &FileProbe<'_>) -> Support {
         match probe.mime {
             Some(m) if m.starts_with("image/") && m != "image/svg+xml" => Support::ByMagic,
@@ -36,6 +40,17 @@ impl Extractor for Image {
     fn extract(&self, input: &mut dyn ExtractInput, limits: &Limits) -> Result<Extracted> {
         let mut meta = FileMeta::default();
         let size = input.size();
+
+        // A zero-filled file (failed download / restore) is a common real-world
+        // case; say so instead of "unknown format".
+        input.seek(SeekFrom::Start(0))?;
+        let mut head = [0u8; 16];
+        let n = input.read(&mut head)?;
+        if n > 0 && head[..n].iter().all(|&b| b == 0) {
+            return Err(ExtractError::Unsupported(
+                "file content is all zero bytes (corrupt)",
+            ));
+        }
 
         input.seek(SeekFrom::Start(0))?;
         let mut exif_reader = BufReader::new(ReadSeek(input));
